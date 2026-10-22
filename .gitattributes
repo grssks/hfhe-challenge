@@ -1,0 +1,21 @@
+# The challenge's own SHA256SUMS is the byte-level authority, and every text
+# artifact in the package is published with LF endings. A core.autocrlf=true
+# checkout rewrites those files to CRLF on the way out, which breaks every
+# published digest. Pinning eol=lf here stops the smudge at the source, so a
+# fresh clone verifies clean.
+#
+# This file lives in the fork, not in the published package: it adds no bytes to
+# any challenge artifact and changes no artifact blob.
+* text=auto eol=lf
+
+# Binary/large data: never convert, never diff as text.
+*.bin -text
+*.ct  -text
+*.pkl -text
+
+# The 44 published LPN samples are 720 MiB of hex rows that SHA256SUMS pins
+# byte-for-byte. They are *data*, not prose: treating them as text costs a
+# 720 MiB normalisation pass on every checkout, and a one-byte corruption then
+# renders as "1 file changed, 1 insertion(+), 1 deletion(-)" instead of a clear
+# binary change. `-text` keeps the bytes verbatim; `-diff` keeps the diff honest.
+lpn_samples/** -text -diff
