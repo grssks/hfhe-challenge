@@ -188,7 +188,33 @@ Impact: an **integrity and canonicality** defect. It does not hand over the plai
 not weaken §2, and does not make the bounty claimable. It does mean an artifact digest is the
 wrong thing to pin.
 
-## 7. Conclusion
+## 7. What the public analyses get wrong
+
+The most detailed public writeup on this challenge reaches the same verdict by two
+checkable wrong turns.
+
+It states the plaintext length is **110 bytes**. The wire says otherwise. `enc_text`
+emits one length cipher and then one cipher per 15-byte block, looping while the position
+is below the length
+([`text.hpp:39-61`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/utils/text.hpp#L39)),
+so `ceil(n/15) = 21` forces `300 < n ≤ 315`. [`secret.ct`](../secret.ct) carries 22
+ciphers, so the plaintext is **301–315 bytes**; a 110-byte payload would produce 9
+ciphers, not 22. Verified as C11.
+
+It also states the LPN instance is unexposed ("exposed LPN equations: 0"). The artifact
+publishes 44 sample files, one per cipher/layer, each holding `t = 16384` rows of a
+4096-bit `a` and a bit `y` — **720,896 equations** at the published τ = 1/8. That is a
+real instance of the side target, just an infeasible one: 16384 samples is 7.4× the 2226
+needed for a unique solution in principle, with Prange ≈ 2^789 and BKW ≈ 2^341. §3 has
+the numbers. Verified as C11.
+
+Both errors run in the safe direction, so the verdict is unchanged — but they are the
+reason this result is stated by witness rather than by survey. The other public writeups
+are no stronger: one describes a syndrome-encryption scheme the engine does not implement,
+and another's cross-layer tool prints "no observable correlation between layers" as a
+literal, unconditionally, without testing anything.
+
+## 8. Conclusion
 
 Three independent lines of evidence agree:
 
@@ -215,7 +241,7 @@ repository root.
 
 | file | role |
 |---|---|
-| [`verify.py`](verify.py) | the whole finding as 43 re-runnable checks |
+| [`verify.py`](verify.py) | the whole finding as 48 re-runnable checks |
 | [`RESULT.md`](RESULT.md) | this document |
 | [`parse.py`](parse.py) | PVAC v0x03 container parser (stdlib only) |
 | [`rist.py`](rist.py) | pure-Python Ristretto255 (stdlib only) |

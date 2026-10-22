@@ -293,6 +293,35 @@ def main():
     check('total edge count matches', total_edges == 1829,
           '%d edges over 22 ciphers' % total_edges)
 
+    # ------------- C11 what the wire shape fixes, and what the public analyses missed
+    # enc_text emits one length cipher plus one cipher per 15-byte block, looping while
+    # position < length. ceil(n/15) = 21 therefore forces 300 < n <= 315: the plaintext
+    # length is 301..315 bytes, not the 110 a competing analysis states.
+    print('\nC11 wire shape fixes the plaintext length; the samples expose the LPN target')
+    blocks = len(cts) - 1
+    check('cipher count fixes the plaintext length to [301,315]', blocks == 21,
+          '%d block ciphers => 15*(blocks-1) < len <= 15*blocks' % blocks)
+
+    files = sorted(glob.glob(os.path.join(ART, 'lpn_samples', '*.jsonl')))
+    check('every cipher/layer pair has a published sample file',
+          len(files) == 2 * len(cts), '%d files' % len(files))
+    heads = []
+    for f in files:
+        with open(f) as fh:
+            heads.append(json.loads(fh.readline()))
+    h0 = heads[0]
+    check('every sample declares the same LPN instance',
+          all(h['n'] == h0['n'] and h['t'] == h0['t'] and h['dom'] == 'pvac.prf.r.1'
+              for h in heads),
+          'n=%d t=%d dom=%s' % (h0['n'], h0['t'], h0['dom']))
+    check('the samples publish 44*t equations, not zero',
+          len(files) * h0['t'] == 720896,
+          '%d files x %d rows' % (len(files), h0['t']))
+    with open(files[0]) as fh:
+        next(fh)
+        rows = sum(1 for _ in fh)
+    check('a sample file holds exactly t rows', rows == h0['t'], '%d rows' % rows)
+
     # ---------------------------------------------------------------- verdict
     print('\n%s' % ('-' * 72))
     if FAILS:
