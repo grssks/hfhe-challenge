@@ -90,6 +90,8 @@ for all plaintexts. The artifact is an information-theoretic OTP, not a computat
 | degenerate build (`R = 1`, `T` in `⟨g⟩`) | 0/44 aggregates in the order-337 subgroup; `R ≠ 1` (132/330 printable = chance) |
 | `T` leaking through a small multiple | the cipher-0 length window is the only high-signal discriminator without `sk`, and it stays quiet |
 | `R` recoverable from the LPN samples | the LPN stream is keyed by `dom` **inside the AES key**, so the published `A` rows and the Toeplitz stream are different keys |
+| the recryption / proof layer, where the engine's own recent fixes land | **unreachable from the artifact**: all 44 published layers are BASE, so `secret.ct` carries no PROD layer, no recryption transcript and no proof for those defects to act on |
+| a third party's public "plaintext recovery" writeup | a **template**: it describes a syndrome-encryption scheme the engine does not implement, asserts a 2^60 complexity with no computation behind it, and ships no results file |
 
 ## 3. The LPN side target (a separate prize, not a route to the key)
 
@@ -128,6 +130,7 @@ for depth hints `d = 0..22` with deltas in `[-5,0]` (the merge/permute collapse)
 44 `ztag` values recompute from published data via
 [`prg_layer_ztag`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/matrix.hpp#L286)
 (`sha256("pvac.dom.ztag" ‖ canon_tag ‖ nonce)` truncated to LE64) with **0/44 mismatches**.
+Both of those statements are executed by [`verify.py`](verify.py) as C10, not asserted.
 
 ## 5. Recorded provenance oddities (not exploitable)
 
@@ -150,7 +153,42 @@ for depth hints `d = 0..22` with deltas in `[-5,0]` (the merge/permute collapse)
   and never opened. Both are soundness/integrity defects. None of the three touches the
   plaintext.
 
-## 6. Conclusion
+## 6. The container does not pin its own payload
+
+A second, independent defect lives in the compressed wrapper rather than in the cipher. The
+container is an adaptive range coder: the decoder refills with zeros past the end of input
+([`RangeDecoder::next_byte`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/core/pvac_compress.hpp#L136)),
+and
+[`unpack`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/core/pvac_compress.hpp#L193)
+ends at a declared-size comparison
+([:209](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/core/pvac_compress.hpp#L209))
+without ever comparing the consumed position against the input length.
+
+Measured ([`probe_container.py`](probe_container.py), re-executed as C9):
+
+| file | sha256 | decodes to | payload consumed |
+|---|---|---|---|
+| [`pk.bin`](../pk.bin) | `1e788edf…e9410` | 17,110,454 B | 3,042,896 of 3,042,896 |
+| `pk.bin` + 64 zero bytes | differs | **the same 17,110,454 B** | 3,042,899 of 3,042,960 |
+
+So `sha256(pk.bin)` pins a *byte string*, not a key: the published `SHA256SUMS` does not
+determine which public key the engine will load. The tolerance is narrow — a **non-zero**
+suffix is rejected (`output exceeds declared size`), because the decoder pulls the appended
+bytes into its code register during the final renormalisation *before* it lands on the
+end-of-stream symbol. The container is therefore non-canonical on a zero-byte alphabet, not
+arbitrarily malleable.
+
+The two published readers also disagree on the same bytes. The pinned C++ deserializer
+[`deserialize_pubkey_raw`](../source/pvac_artifact_serialize.hpp#L425) ends at
+[`validate_pubkey_structure(pk)`](../source/pvac_artifact_serialize.hpp#L464) with no
+`r.p == len` comparison and accepts trailing bytes, while the port used here
+[asserts full consumption](parse.py#L198) and rejects them.
+
+Impact: an **integrity and canonicality** defect. It does not hand over the plaintext, does
+not weaken §2, and does not make the bounty claimable. It does mean an artifact digest is the
+wrong thing to pin.
+
+## 7. Conclusion
 
 Three independent lines of evidence agree:
 
@@ -177,12 +215,13 @@ repository root.
 
 | file | role |
 |---|---|
-| [`verify.py`](verify.py) | the whole finding as 34 re-runnable checks |
+| [`verify.py`](verify.py) | the whole finding as 43 re-runnable checks |
 | [`RESULT.md`](RESULT.md) | this document |
 | [`parse.py`](parse.py) | PVAC v0x03 container parser (stdlib only) |
 | [`rist.py`](rist.py) | pure-Python Ristretto255 (stdlib only) |
 | [`README.upstream.md`](README.upstream.md) | the upstream README body, pinned so this file's preservation of it is checkable |
 | [`commit_msg_guard.py`](commit_msg_guard.py) | commit-message guard (names issues in words, never in reference syntax) |
+| [`probe_container.py`](probe_container.py) | the container measurement behind C9, including the two full decodes of `pk.bin` |
 
 [`verify.py`](verify.py) needs nothing beyond the Python standard library and the artifacts
 at the repository root. The engine source it cites is deliberately not vendored: the

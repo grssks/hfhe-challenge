@@ -120,6 +120,8 @@ Deeper measurements — the LPN noise census, the [`prf_k`](https://github.com/o
 
 The artifact is faithful to the pinned source: edge counts track the entropy budget `2·(8 + 2q₂ + 3q₃)` from [`struct Budget`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/ops/encrypt.hpp#L199) for depth hints `d = 0..22` with deltas in `[-5, 0]` (the merge/permute collapse), and all 44 `ztag` values recompute from public data via [`prg_layer_ztag`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/matrix.hpp#L286) with 0/44 mismatches.
 
+The container itself is a second defect, independent of the cipher: an all-zero suffix appended to a compressed artifact still decodes to the identical payload, so `sha256(pk.bin)` pins a byte string rather than a key (a non-zero suffix is rejected instead). Measured in [`solution/probe_container.py`](solution/probe_container.py) and re-executed as C9.
+
 Two provenance oddities, neither exploitable: the shipped generator [hardcodes `"status": "pre-release"`](source/hfhe_bounty_artifact.cpp#L304) while the published [`manifest.json`](manifest.json) says `"active"`; and [`compute_R_com_base`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/core/hash.hpp#L198) hashes [`R_slots.size()`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/core/hash.hpp#L210) without ever reading a slot, so even a future release that republished [`R_com`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/core/types.hpp#L95) would hand over a hash of the slot *count*. That is a soundness defect, not a confidentiality one — as are the unverified per-edge [`sigma`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/matrix.hpp#L298) and the never-opened Pedersen [`PC`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/core/types.hpp#L96).
 
 ## Files
@@ -128,7 +130,8 @@ Everything under [`solution/`](solution/) is fork work; nothing above it was add
 
 | path | contents |
 | :--- | :--- |
-| [`solution/verify.py`](solution/verify.py) | the whole finding as 34 re-runnable checks |
+| [`solution/verify.py`](solution/verify.py) | the whole finding as 43 re-runnable checks |
+| [`solution/probe_container.py`](solution/probe_container.py) | the container measurement behind C9, including two full decodes of `pk.bin` |
 | [`solution/RESULT.md`](solution/RESULT.md) | the written analysis: wire shape, the hiding witness, every killed handle, the LPN bound |
 | [`solution/parse.py`](solution/parse.py) | PVAC v0x03 container parser (stdlib only) |
 | [`solution/rist.py`](solution/rist.py) | pure-Python Ristretto255 (stdlib only) |

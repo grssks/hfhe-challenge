@@ -11,6 +11,7 @@ import re
 import sys
 import glob
 import json
+import math
 import struct
 import hashlib
 
@@ -219,6 +220,78 @@ def main():
     moving = [rel for rel, text in docs.items()
               if re.search(r'pvac_hfhe_cpp/(blob|tree)/(main|master)\b', text)]
     check('no citation points at a moving branch', not moving, ', '.join(moving) or 'none')
+
+    # ------------------------------- C9 the container does not pin its own payload
+    # The compressed container (include/pvac/core/pvac_compress.hpp at the pin) is an
+    # adaptive range coder whose decoder refills with zeros past the end of input and
+    # whose unpack() never compares the consumed position against the input length.
+    # Measured consequence: an all-zero suffix still decodes to the identical payload,
+    # so sha256(pk.bin) pins a byte string, not a key. Synthetic blobs only -- a real
+    # decode of pk.bin costs ~2 min, so the published file is checked on its header and
+    # the full measurement lives in probe_container.py.
+    print('\nC9  the container does not pin its own payload')
+    import probe_container as Q
+    rt_ok = True
+    for n in (0, 17, 1000):
+        blob = os.urandom(n)
+        if Q.unpack_measured(Q.pack(blob))[0] != blob:
+            rt_ok = False
+    check('the probe encoder round-trips the engine format', rt_ok,
+          'n = 0, 17, 1000')
+
+    blob = os.urandom(1000)
+    a = Q.pack(blob)
+    b = a + b'\x00' * 64
+    same = Q.unpack_measured(b)[0] == Q.unpack_measured(a)[0] == blob
+    check('an all-zero suffix decodes to the identical payload', same,
+          'one payload, many byte strings')
+    check('those byte strings differ under sha256',
+          same and hashlib.sha256(a).digest() != hashlib.sha256(b).digest())
+
+    rejected = False
+    try:
+        Q.unpack_measured(a + b'\xff' * 64)
+    except ValueError as exc:
+        rejected = 'exceeds declared size' in str(exc)
+    check('a non-zero suffix is rejected, not silently ignored', rejected,
+          'the decoder pulls the suffix into its code register before EOF')
+
+    head = open(PK, 'rb').read(5)
+    check('pk.bin declares the size the probe decodes',
+          head[0] == 0xEC and int.from_bytes(head[1:5], 'big') == 17110454,
+          'declared %d B' % int.from_bytes(head[1:5], 'big'))
+
+    # ------------------------- C10 the artifact matches the published budget model
+    # Edge count per BASE layer is K(=8) SigEdges + 2*q2 + 3*q3, and enc_text encrypts
+    # block k at depth k+1 (cipher 0, the length carrier, at depth 0). If the published
+    # ciphertext were hand-made rather than engine output, the counts would not track the
+    # budget derived from params.json.
+    print('\nC10 the artifact matches the published budget model')
+    prm = json.load(open(os.path.join(ART, 'params.json')))
+    B = prm['b']
+    c2, c3 = 2 * math.log2(B), 3 * math.log2(B)
+
+    def budget(d):
+        cap = prm['noise_entropy_bits'] + prm['depth_slope_bits'] * max(0, d)
+        q2 = int(cap * prm['tuple2_fraction'] / c2)
+        q3 = int(cap * (1 - prm['tuple2_fraction']) / c3)
+        if q2 + q3 == 1:
+            if q3 > 0:
+                q3 += 1
+            else:
+                q2 += 1
+        return q2, q3
+
+    deltas = []
+    for i, c in enumerate(cts):
+        d = 0 if i == 0 else i + 1
+        q2, q3 = budget(d)
+        deltas.append(len(c['E']) - 2 * (8 + 2 * q2 + 3 * q3))
+    check('every cipher is within 5 edges of the budget model',
+          all(-5 <= x <= 0 for x in deltas), 'deltas %s' % deltas)
+    total_edges = sum(len(c['E']) for c in cts)
+    check('total edge count matches', total_edges == 1829,
+          '%d edges over 22 ciphers' % total_edges)
 
     # ---------------------------------------------------------------- verdict
     print('\n%s' % ('-' * 72))
