@@ -130,7 +130,7 @@ Everything under [`solution/`](solution/) is fork work; nothing above it was add
 
 | path | contents |
 | :--- | :--- |
-| [`solution/verify.py`](solution/verify.py) | the whole finding as 48 re-runnable checks |
+| [`solution/verify.py`](solution/verify.py) | the whole finding as 56 re-runnable checks |
 | [`solution/probe_container.py`](solution/probe_container.py) | the container measurement behind C9, including two full decodes of `pk.bin` |
 | [`solution/RESULT.md`](solution/RESULT.md) | the written analysis: wire shape, the hiding witness, every killed handle, the LPN bound |
 | [`solution/parse.py`](solution/parse.py) | PVAC v0x03 container parser (stdlib only) |

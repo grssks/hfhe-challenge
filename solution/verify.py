@@ -322,6 +322,134 @@ def main():
         rows = sum(1 for _ in fh)
     check('a sample file holds exactly t rows', rows == h0['t'], '%d rows' % rows)
 
+    # --------- C12 same-idx opposite-sign edges do not expose a power of the mask
+    # A public report against the engine states: "In layer-0, two edges sharing the
+    # same idx with opposite ch expose +-R^2*g[idx] (cancel g -> recover R^2 -> R =
+    # sqrt(R^2), field p = 3 mod 4)".  That report is about a different artifact, but
+    # the structural precondition is measurable here.
+    #
+    # The test must close over BOTH layers of a cipher, which is the trap: the published
+    # aggregate is T_l = R_l * va_l with va_l = block + delta_l, so isolating one mask
+    # (cand_l == R_l) yields a value still hidden by the secret delta.  The wrap cancels
+    # the deltas across the pair, so the closed form is v = T_0/cand_0 + T_1/cand_1, and
+    # the per-term squares when cand_l is hypothesised to be R_l^2 (p = 3 mod 4).
+    #
+    # Why no hypothesis can fire: every edge weight is coefficient*R and merge() keeps
+    # SGN_P and SGN_M in separate accumulators, so a same-idx opposite-sign pair
+    # contributes (c_P - c_M)*g^idx*R -- linear in R with an unknown coefficient, one
+    # equation in two unknowns.
+    print('\nC12 same-idx opposite-sign edges do not expose a power of the mask')
+    prm_p = P.P
+
+    def _sqrt(x):
+        v = P.f2i(x) % prm_p
+        r = pow(v, (prm_p + 3) // 4, prm_p)
+        return P.i2f(r), (r * r) % prm_p == v
+
+    def _recover(T, cand, k):
+        """va such that T = R*va, when cand is hypothesised to equal R^k."""
+        if k == 1:
+            return [P.fmul(T, P.finv(cand))]
+        if k == -1:
+            return [P.fmul(T, cand)]
+        base = P.fmul(T, T)
+        base = P.fmul(base, P.finv(cand)) if k == 2 \
+            else P.fmul(base, P.fmul(cand, cand))
+        root, sq = _sqrt(base)
+        return [root, P.fneg(root)] if sq else []
+
+    def _pairs(C, lay):
+        by_idx = {}
+        for e in C['E']:
+            if e['layer'] == lay:
+                by_idx.setdefault(e['idx'], []).append(e)
+        out = []
+        for idx, es in by_idx.items():
+            if len(es) != 2 or es[0]['ch'] == es[1]['ch']:
+                continue
+            terms = []
+            for e in es:
+                term = P.fmul(e['w'][0], pk['powg_B'][e['idx']])
+                terms.append(term if e['ch'] == P.SGN_P else P.fneg(term))
+            cand = P.fadd(terms[0], terms[1])
+            out.append((idx, [cand, P.fneg(cand)]))
+        return out
+
+    def _score(ci, v):
+        """Does a candidate block look like plaintext? (length carrier / 15 ASCII bytes)"""
+        iv = P.f2i(v) % prm_p
+        if iv >> 120:
+            return None
+        blk = iv.to_bytes(15, 'little')
+        if ci == 0:
+            return ('len', iv) if 301 <= iv <= 315 else None
+        return ('blk', blk) if blk.count(0) == 0 and all(
+            32 <= byte < 127 for byte in blk) else None
+
+    # Positive control: if the instrument could never fire, "0 recoveries" would mean
+    # nothing. Cipher 0 carries the length and every other cipher a 15-byte ASCII block.
+    ctrl = (_score(0, P.i2f(307)) is not None and
+            _score(1, P.i2f(int.from_bytes(b'the quick brown', 'little'))) is not None and
+            _score(1, P.i2f(int.from_bytes(b'\x00\x01\x02' * 5, 'little'))) is None)
+    check('the scorer fires on known-good blocks and rejects noise', ctrl)
+
+    groups = 0
+    closures = 0
+    hits = []
+    for ci, C in enumerate(cts):
+        g0, g1 = _pairs(C, 0), _pairs(C, 1)
+        groups += len(g0) + len(g1)
+        if not (g0 and g1):
+            continue
+        T0, T1 = P.public_T(pk, C, 0, 0), P.public_T(pk, C, 1, 0)
+        for i0, c0s in g0:
+            for i1, c1s in g1:
+                for c0 in c0s:
+                    for c1 in c1s:
+                        if P.f2i(c0) % prm_p == 0 or P.f2i(c1) % prm_p == 0:
+                            continue
+                        for k0 in (1, -1, 2, -2):
+                            for k1 in (1, -1, 2, -2):
+                                a0 = _recover(T0, c0, k0)
+                                if not a0:
+                                    continue
+                                a1 = _recover(T1, c1, k1)
+                                if not a1:
+                                    continue
+                                closures += 1
+                                for x in a0:
+                                    for y in a1:
+                                        hit = _score(ci, P.fadd(x, y))
+                                        if hit:
+                                            hits.append((ci, i0, i1, k0, k1, hit))
+    check('the precondition is present in this artifact', groups == 56,
+          '%d (layer,idx) groups carry both signs' % groups)
+    check('no pair aggregate hands over the block', not hits,
+          '%d mask hypotheses closed over both layers, 0 recoveries' % closures)
+
+    # ------------------- C13 the 44 commitments are canonical Ristretto255 points
+    # The pinned decoder does not enforce the canonical encoding: fe_frombytes masks
+    # bit 255 instead of rejecting it and nothing range-checks the integer, so two
+    # distinct 32-byte strings can denote one group element. Distinctness of PC bytes
+    # is therefore weaker than distinctness of commitments, and C4 only compares bytes.
+    # Check the strict rule the decoder omits, then compare points rather than bytes.
+    print('\nC13 the 44 commitments are canonical Ristretto255 points')
+    import rist
+    pr255 = rist.P
+    pcs = [bytes(L['PC'][0]) for c in cts for L in c['L']]
+    vals = [int.from_bytes(x, 'little') for x in pcs]
+    check('one commitment per BASE layer', len(pcs) == 44, '%d' % len(pcs))
+    check('no commitment sets bit 255',
+          all(not (x[31] & 0x80) for x in pcs),
+          'the pinned decoder would accept one silently')
+    check('every commitment is below 2^255-19 as an integer',
+          all(v < pr255 for v in vals), 'max bit length %d' % max(v.bit_length() for v in vals))
+    pts = [rist.decode(x) for x in pcs]
+    check('every commitment decodes', all(p is not None for p in pts))
+    check('the 44 commitments are distinct as group elements',
+          len({rist.encode(p) for p in pts if p}) == 44,
+          'bytes distinct: %d' % len(set(pcs)))
+
     # ---------------------------------------------------------------- verdict
     print('\n%s' % ('-' * 72))
     if FAILS:

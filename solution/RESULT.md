@@ -214,7 +214,67 @@ are no stronger: one describes a syndrome-encryption scheme the engine does not 
 and another's cross-layer tool prints "no observable correlation between layers" as a
 literal, unconditionally, without testing anything.
 
-## 8. Conclusion
+## 8. The three public reports on the engine, and how each fares here
+
+Three reports are open against the engine at the pinned commit. None of them changes the
+verdict, and two name mechanisms that sound like they should apply here, so each was tested
+rather than dismissed.
+
+**A structural claim about layer-0 edge pairs.** One report states, of a different
+artifact: "In layer-0, two edges sharing the same idx with opposite ch expose ±R²·g[idx]
+(cancel g → recover R² → R = sqrt(R²), field p ≡ 3 mod 4)". The precondition is real in
+this one: **56 `(layer, idx)` groups carry both signs, 31 of them in layer 0**, and the
+multiplicity is exactly 2 in every group.
+
+Testing it naively would prove nothing, which is the trap worth recording. The aggregate is
+`T_l = R_l·v_l`, so isolating a *single* layer's mask returns `v_l` — and for one half of the
+wrap that is `v + m`, the plaintext plus a fresh mask, not the plaintext. The wrap is what
+closes it: `T_0 = R_0(v + m)` and `T_1 = R_1(−m)`, so `v = T_0/R_0 + T_1/R_1`. The test
+therefore closes over **both** layers of a cipher, with `cand_l` hypothesised to equal
+`R_l^k` for `k ∈ {1, −1, 2, −2}` independently per layer and both square roots per `k = ±2`
+term (`p ≡ 3 mod 4`). That is only possible where a cipher carries such a pair in **both**
+layers — 11 of the 22 do; 8 more carry one in a single layer, where the recovered value
+stays hidden by the other layer's mask, and ciphers 0, 1 and 5 — the length carrier among
+them — carry none at all.
+
+**0 recoveries** in 1862 closing combinations, with the scorer positively controlled first
+so that a real recovery could not pass unnoticed (cipher 0 is a length in 301–315; every
+other cipher is 15 printable bytes). Verified as C12.
+
+The arithmetic reason is one line of the engine: every edge weight is a coefficient
+times the mask, `field::Op::mul(n.coef, R)`
+([`encrypt.hpp:779`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/ops/encrypt.hpp#L779)),
+and `merge()` keeps the two signs in separate accumulators
+([`encrypt.hpp:619-624`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/ops/encrypt.hpp#L619)),
+so a same-idx opposite-sign pair contributes `(c_P − c_M)·g^idx·R` — **linear in `R` with
+an unknown coefficient**, one equation in two unknowns. An `R²` term would require the
+*difference* of two public coefficients to equal `R`, which no construction in the engine
+sets — the coefficients are drawn independently of the mask. The report is
+also made against a different artifact (a homomorphic `a.ct + b.ct` sum), and the engine
+ships a regression test for its shape that asserts zero leaks (`tests/bounty_r2_attack.cpp`
+at the pin).
+
+**The recryption soundness gaps.** Two unmerged engine changes, plus an open report that
+reproduces them, concern the native-recrypt statement digest and the unbound
+`proof.digest`. The report runs the escalation itself and reaches the same conclusion this
+document reaches from the artifact side: the surface is **integrity-only**, no function on
+it produces the reset secrets, and **zero plaintext elements** come back. That is consistent
+with what `secret.ct` publishes — 22 ciphers, all BASE layers, no PROD layer, no recryption
+transcript, no proof. Those reports are about a surface the bounty artifact does not
+contain, so they cannot decrypt it. Verified structurally as C1.
+
+**Non-canonical Ristretto255 encodings.** The third report is correct about the engine and
+irrelevant to this artifact, and the difference is worth recording. At the pin,
+`fe_frombytes` masks bit 255 instead of rejecting it and nothing range-checks the integer
+([`ristretto255.hpp:149`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/ristretto255.hpp#L149)),
+so `rist_decode` accepts two distinct byte strings for one group element. That matters here
+because the natural check — "44 distinct `PC`" — compares **bytes**, and under a lenient
+decoder byte-distinctness does not imply commitment-distinctness. Measured under the strict
+rule the decoder omits: all 44 encodings have bit 255 clear, all are below `2^255 − 19` as
+integers, all decode, and the 44 points are **distinct as group elements**, not merely as
+bytes. Verified as C13.
+
+## 9. Conclusion
 
 Three independent lines of evidence agree:
 
@@ -241,7 +301,7 @@ repository root.
 
 | file | role |
 |---|---|
-| [`verify.py`](verify.py) | the whole finding as 48 re-runnable checks |
+| [`verify.py`](verify.py) | the whole finding as 56 re-runnable checks |
 | [`RESULT.md`](RESULT.md) | this document |
 | [`parse.py`](parse.py) | PVAC v0x03 container parser (stdlib only) |
 | [`rist.py`](rist.py) | pure-Python Ristretto255 (stdlib only) |
