@@ -12,6 +12,7 @@ import sys
 import glob
 import json
 import math
+import random
 import struct
 import hashlib
 import subprocess
@@ -653,21 +654,202 @@ def main():
           (r_rank, r_dep) == (rank, dep) and abs(r_incons - incons) / math.sqrt(dep / 4.0) < 3.0,
           'rank %d, dependent %d, inconsistent %d' % (r_rank, r_dep, r_incons))
 
-    # ------------------- C18 the docs state the count this run actually executes
+    # ------------------- C18 toep_127 reads 127 bits, and the samples publish them
+    # Section 3 used to justify "even full recovery of S would not yield R" by pointing at
+    # the separate TOEP key. That is true and it is not the sharpest reason. `toep_127`
+    # keeps bits 0..126 of the raw GF(2) convolution (toeplitz.hpp:133), and convolution
+    # bit j only sums inputs of index <= j, so the function reads exactly 127 bits of `y`
+    # and 127 bits of `top` out of 16384 and 16512. Everything else the engine generates
+    # for this step is discarded before it is used.
+    #
+    # That has a consequence the docs did not draw: the 44 published sample files give
+    # `y` for every row in the clear, so the 127 bits that actually reach prf_R are
+    # published outright. The LPN sub-challenge is not merely a separate prize -- for
+    # PRF_R1 it is a prize that has already been handed out, and solving it for all
+    # 16384 rows would add nothing.
+    print('\nC18 toep_127 consumes 127 bits, and the samples publish those bits')
+
+    def _toep_conv_scalar(A, B):
+        """Bit-exact port of gf2_conv_scalar (toeplitz.hpp:22-48)."""
+        Wa, Wb = len(A), len(B)
+        R = [0] * (Wa + Wb)
+        for i in range(Wa):
+            a = A[i]
+            while a:
+                bmask = a & -a
+                k = bmask.bit_length() - 1
+                for j in range(Wb):
+                    b = B[j]
+                    if k == 0:
+                        R[i + j] ^= b
+                    else:
+                        R[i + j] ^= (b << k) & 0xFFFFFFFFFFFFFFFF
+                        R[i + j + 1] ^= b >> (64 - k)
+                a ^= bmask
+        return R
+
+    def _toep_127_words(top, ybits):
+        """Port of toep_127_scalar (toeplitz.hpp:121-140): keep bits 0..126 only."""
+        R = _toep_conv_scalar(ybits, top)
+        lo = hi = 0
+        for j in range(127):
+            bit = (R[j >> 6] >> (j & 63)) & 1
+            if j < 64:
+                lo |= bit << j
+            else:
+                hi |= bit << (j - 64)
+        return lo, hi
+
+    def _clmul(a, b):
+        r = 0
+        while b:
+            lb = b & -b
+            r ^= a << (lb.bit_length() - 1)
+            b ^= lb
+        return r
+
+    def _toep_127_int(top, y):
+        return _clmul(top, y) & ((1 << 127) - 1)
+
+    _rnd = random.Random(20261024)
+    _agree = True
+    for _ in range(3):
+        _tw, _yw = 8, 6
+        _T = [_rnd.getrandbits(64) for _ in range(_tw)]
+        _Y = [_rnd.getrandbits(64) for _ in range(_yw)]
+        _lo, _hi = _toep_127_words(_T, _Y)
+        _v = _toep_127_int(sum(w << (64 * i) for i, w in enumerate(_T)),
+                           sum(w << (64 * i) for i, w in enumerate(_Y)))
+        _agree = _agree and (_lo, _hi) == (_v & ((1 << 64) - 1), _v >> 64)
+    check('the word-level port and the polynomial product agree', _agree)
+
+    # out_j = sum_{i<=j} top_i * y_{j-i} (mod 2): the truncation is not a heuristic,
+    # it is the whole function.
+    _closed_ok = True
+    for _ in range(3):
+        _top = _rnd.getrandbits(127)
+        _y = _rnd.getrandbits(127)
+        _out = _toep_127_int(_top, _y)
+        for _j in range(127):
+            _s = 0
+            for _i in range(_j + 1):
+                _s ^= ((_top >> _i) & 1) & ((_y >> (_j - _i)) & 1)
+            _closed_ok = _closed_ok and ((_out >> _j) & 1) == _s
+    check('every output bit is the triangular product top*y mod x^127',
+          _closed_ok, 'out_j = sum_{i<=j} top_i*y_{j-i} over GF(2)')
+
+    _top = _rnd.getrandbits(127)
+    _y = _rnd.getrandbits(127)
+    _base = _toep_127_int(_top, _y)
+    _hi_bits_ignored = (
+        _toep_127_int(_top | (_rnd.getrandbits(256) << 127), _y) == _base and
+        _toep_127_int(_top, _y | (_rnd.getrandbits(256) << 127)) == _base)
+    check('input bits at index >= 127 cannot reach the output', _hi_bits_ignored,
+          'both operands may carry 16512 bits; only the low 127 are read')
+
+    # The engine allocates for the full Toeplitz row and then throws nearly all of it away.
+    _t = 16384
+    _top_words = (_t + 127 + 63) // 64          # lpn.hpp:393
+    _top_bits = _top_words * 64
+    check('prf_R_core generates %d bits of top and reads 127' % _top_bits,
+          _top_words == 258 and _top_bits - 127 == 16385,
+          '%d words = %d bits, 127 used, %d discarded' %
+          (_top_words, _top_bits, _top_bits - 127))
+
+    # And the 127 bits of `y` that survive are published in the clear.
+    _pub = 0
+    for _f in samples:
+        with open(_f) as _fh:
+            _fh.readline()
+            _win = []
+            for _ in range(127):
+                _win.append(json.loads(_fh.readline())['y'])
+        if (len(_win) == 127 and all(b in (0, 1) for b in _win)
+                and _win[0] == 1 or all(b in (0, 1) for b in _win)):
+            _pub += 1
+    check('every sample publishes the 127 y-bits that reach prf_R', _pub == 44,
+          '%d of 44 carry y[0..126] in the clear' % _pub)
+
+    # ------------------- C19 the organiser's binding tool checks a header, not a sample
+    # source/tools/verify_lpn_sample_binding.cpp is the tool the challenge ships for
+    # "does this sample belong to this ciphertext". It reads exactly one line of the
+    # sample (read_first_line at :169) and compares four header fields against the wire
+    # (:174-182). It never opens the rows. So the predicate it computes is a property of
+    # the first line alone, and three mutations that destroy the sample all still pass.
+    # This is a scope defect, not a false positive: the 44 published files are genuine
+    # (C2/C16 bind them to the wire), but the tool cannot show it and would accept a forgery.
+    print('\nC19 the shipped binding tool accepts a header that has no sample behind it')
+
+    _TOOL = os.path.join(ART, 'source', 'tools', 'verify_lpn_sample_binding.cpp')
+    _tool_src = open(_TOOL, encoding='utf-8').read() if os.path.exists(_TOOL) else ''
+    # argv[3] is the sample. It is touched exactly once, and the function it is handed to
+    # contains exactly one getline -- no loop over rows anywhere in the tool.
+    _argv3 = _tool_src.count('argv[3]')
+    _rfl_body = _tool_src.split('static std::string read_first_line', 1)[-1].split('\n}', 1)[0]
+    check('the binding tool reads the sample header only',
+          bool(_tool_src) and _argv3 == 1 and 'read_first_line(argv[3])' in _tool_src
+          and _rfl_body.count('std::getline') == 1 and 'while' not in _rfl_body,
+          'argv[3] used %d time (the one call), one getline, no row loop'
+          % _argv3)
+
+    def _binds(meta_line, targets):
+        """The tool's predicate, transcribed: four header fields, nothing else."""
+        m = json.loads(meta_line)
+        return any(t['seed_ztag'] == m['seed_ztag']
+                   and t['nonce_lo_hex'] == m['nonce_lo_hex']
+                   and t['nonce_hi_hex'] == m['nonce_hi_hex']
+                   and t['public_T_hex'] == m['public_T_hex']
+                   for t in targets)
+
+    _targets = []
+    for _c in cts:
+        for _lid, _L in enumerate(_c['L']):
+            _T = P.public_T(pk, _c, _lid, 0)
+            _targets.append({'seed_ztag': _L['ztag'],
+                             'nonce_lo_hex': '%016x' % _L['nlo'],
+                             'nonce_hi_hex': '%016x' % _L['nhi'],
+                             'public_T_hex': P.fp_hex(_T)})
+
+    _real_ok = 0
+    for _f in samples:
+        with open(_f) as _fh:
+            if _binds(_fh.readline(), _targets):
+                _real_ok += 1
+    check('all 44 genuine samples bind (the samples are real)', _real_ok == 44,
+          '%d of 44' % _real_ok)
+
+    with open(samples[0]) as _fh:
+        _hdr = json.loads(_fh.readline())
+    _mutations = {
+        'header with cipher_index/layer_id/slot replaced by nonsense':
+            dict(_hdr, cipher_index=999, layer_id=7, slot=3),
+        'header with the LPN parameters replaced by nonsense':
+            dict(_hdr, n=1, t=1, tau_num=0, tau_den=1, row_words=1),
+    }
+    _accepted = [name for name, m in _mutations.items()
+                 if _binds(json.dumps(m), _targets)]
+    check('the tool accepts headers whose parameters and identity are wrong',
+          len(_accepted) == 2, '%d of 2 accepted' % len(_accepted))
+    # A header-only file -- every row deleted -- binds just as well.
+    check('a header-only file with no rows binds identically',
+          _binds(json.dumps(_hdr), _targets),
+          'the 16384 rows are never read, so deleting them changes nothing')
+
+    # ------------------- C20 the docs state the count this run actually executes
     # A check count in prose drifts the moment a check is added, and then the only
     # thing that is wrong is the document -- silently. Read every stated count out of
     # the two documents that make the promise and compare it with this run.
-    print('\nC18 the check count stated in the docs is the count this run executes')
+    print('\nC20 the check count stated in the docs is the count this run executes')
     # Position independence: this block must be the last thing that calls check(), so
     # the suite proves that structurally instead of trusting where the block was pasted.
     # (It was pasted in the wrong place twice, and both times the count came out one
     # too high while every other check still passed.)
     # Built from parts so this guard cannot match its own source text.
     _hdr = '# ' + '-' * 19 + ' C'
-    _body = src_text[src_text.index(_hdr + '18'):]
-    assert _body.count(_hdr) == 1, 'C18 must be the last numbered section'
+    _body = src_text[src_text.index(_hdr + '20'):]
+    assert _body.count(_hdr) == 1, 'C20 must be the last numbered section'
     _n = _body.count('\n' + ' ' * 4 + 'check(')
-    assert _n == 1, 'C18 must be the final check (found %d calls in its section)' % _n
+    assert _n == 1, 'C20 must be the final check (found %d calls in its section)' % _n
     total = CHECKS[0] + 1  # this check counts itself, so the total is the run
     stated = []
     for rel in ('README.md', os.path.join('solution', 'RESULT.md')):

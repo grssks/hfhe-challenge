@@ -43,7 +43,7 @@ A tool has also been added to validate the public metadata binding between the L
 Reproduce the whole finding with one command:
 
 ```
-python solution/verify.py        # 72 checks, 0 failures, exit 0
+python solution/verify.py        # 81 checks, 0 failures, exit 0
 ```
 
 ## Layout
@@ -55,7 +55,7 @@ secret.ct  pk.bin  params.json  manifest.json  pvac_commit.txt  SHA256SUMS   pac
 lpn_samples/  source/                                                        package
 README.md                                                                    package body + this note
 solution/                                                                    fork only
-├── verify.py              72 checks; exit 0 = the finding reproduces
+├── verify.py              81 checks; exit 0 = the finding reproduces
 ├── RESULT.md              the written analysis
 ├── parse.py               PVAC v0x03 container parser (stdlib only)
 ├── rist.py                pure-Python Ristretto255 (stdlib only)
@@ -106,6 +106,11 @@ Deeper measurements — the [`prf_k`](https://github.com/octra-labs/pvac_hfhe_cp
 
 - Gaussian elimination does not recover `S`: the instance has full column rank 4096 over 16,384 rows, so elimination ends with 12,288 unsatisfied equations. That census is **arithmetic, not evidence** — a random code of the same shape gives the same shape, and the 6,133 inconsistent rows sit 0.20σ from the 6,144 a fair coin predicts. Verified as C17, random control included.
 - The instance sits above the decoding threshold (`t = 16384` vs `n·H(τ) ≈ 2226`, 7.4×), but decoding a random `[16384, 4096]` code at `δ = 1/8` costs Prange ≈ `(7/8)⁻⁴⁰⁹⁶ ≈ 2⁷⁸⁹`; BKW's correlation decays as `0.75^(2^a)`, so folding destroys the signal.
+- **`prf_R` reads 127 bits of `y`, and the samples publish those 127.** `toep_127` keeps bits
+  `0..126` of the GF(2) convolution, so `out_j = sum_{i<=j} top_i*y_{j-i} mod 2` and no input
+  bit at index >= 127 can reach the output. The engine generates 16,512 bits of `top` and uses
+  127. The 44 sample files carry `y` in the clear, so the LPN instance is redundant with
+  respect to `R`, not a foothold on it. Verified as C18.
 - **Even full recovery of `S` would not yield `R`.** [`S`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/keygen.hpp#L151) is generated independently of [`prf_k`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/keygen.hpp#L87), and [`prf_R_core`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/lpn.hpp#L376) additionally needs `top` from [`derive_aes_key(…, Dom::TOEP, …)`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/lpn.hpp#L307), which absorbs [`prf_k`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/keygen.hpp#L87). `dom` enters the AES **key** ([lpn.hpp:331](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/lpn.hpp#L331)), so the published `A` rows and the Toeplitz stream are different keys.
 
 ## Provenance
@@ -122,7 +127,7 @@ The artifact is faithful to the pinned source: edge counts track the entropy bud
 
 The container itself is a second defect, independent of the cipher: an all-zero suffix appended to a compressed artifact still decodes to the identical payload, so `sha256(pk.bin)` pins a byte string rather than a key (a non-zero suffix is rejected instead). Measured in [`solution/probe_container.py`](solution/probe_container.py) and re-executed as C9.
 
-Two provenance oddities, neither exploitable: the shipped generator [hardcodes `"status": "pre-release"`](source/hfhe_bounty_artifact.cpp#L304) while the published [`manifest.json`](manifest.json) says `"active"`; and [`compute_R_com_base`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/core/hash.hpp#L198) hashes [`R_slots.size()`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/core/hash.hpp#L210) without ever reading a slot, so even a future release that republished [`R_com`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/core/types.hpp#L95) would hand over a hash of the slot *count*. That is a soundness defect, not a confidentiality one — as are the unverified per-edge [`sigma`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/matrix.hpp#L298) and the never-opened Pedersen [`PC`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/core/types.hpp#L96).
+The shipped sample-binding tool checks a header, not a sample: [`verify_lpn_sample_binding.cpp`](source/tools/verify_lpn_sample_binding.cpp#L169) reads one line and compares four fields, so a file whose 16,384 rows have been deleted still reports `binding = 1` (C19, [RESULT §12](solution/RESULT.md)). Two provenance oddities, neither exploitable: the shipped generator [hardcodes `"status": "pre-release"`](source/hfhe_bounty_artifact.cpp#L304) while the published [`manifest.json`](manifest.json) says `"active"`; and [`compute_R_com_base`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/core/hash.hpp#L198) hashes [`R_slots.size()`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/core/hash.hpp#L210) without ever reading a slot, so even a future release that republished [`R_com`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/core/types.hpp#L95) would hand over a hash of the slot *count*. That is a soundness defect, not a confidentiality one — as are the unverified per-edge [`sigma`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/matrix.hpp#L298) and the never-opened Pedersen [`PC`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/core/types.hpp#L96).
 
 ## Files
 
@@ -130,7 +135,7 @@ Everything under [`solution/`](solution/) is fork work; nothing above it was add
 
 | path | contents |
 | :--- | :--- |
-| [`solution/verify.py`](solution/verify.py) | the whole finding as 72 re-runnable checks |
+| [`solution/verify.py`](solution/verify.py) | the whole finding as 81 re-runnable checks |
 | [`solution/probe_container.py`](solution/probe_container.py) | the container measurement behind C9, including two full decodes of `pk.bin` |
 | [`solution/RESULT.md`](solution/RESULT.md) | the written analysis: wire shape, the hiding witness, every killed handle, the LPN bound |
 | [`solution/parse.py`](solution/parse.py) | PVAC v0x03 container parser (stdlib only) |

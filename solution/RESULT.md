@@ -6,7 +6,7 @@ plaintext at all**. The 500,000 OCT bounty cannot be claimed by cryptanalysis of
 [`secret.ct`](../secret.ct); it requires [`sk.prf_k`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/keygen.hpp#L87), which is 256 bits of CSPRNG output
 that never leaves the generator's process.
 
-Reproduce: `python solution/verify.py` → **72 checks, 0 failures, exit 0**.
+Reproduce: `python solution/verify.py` → **81 checks, 0 failures, exit 0**.
 
 This analysis re-derives the scheme from the pinned engine source rather than inheriting
 any prior conclusion; where two readings disagreed, the disagreement was resolved by
@@ -99,9 +99,10 @@ for all plaintexts. The artifact is an information-theoretic OTP, not a computat
 `y = ⟨A,S⟩ ⊕ e` instance: `n=4096`, `t=16384`, `τ=1/8`, with the **entire `A` matrix** as
 the `"a"` field.
 
-- Noise is genuine: Gaussian elimination does **not** recover `S` — the instance has full
-  column rank 4096 over 16,384 rows and the dependent rows carry a syndrome bit, so
-  elimination terminates with 12,288 unsatisfied equations and no solution.
+- Gaussian elimination does **not** recover `S`: the instance has full column rank 4096 over
+  16,384 rows and the dependent rows carry a syndrome bit, so elimination terminates with
+  12,288 unsatisfied equations and no solution. That is a fact about the rank, not a
+  measurement of noise, and the next sentence is why the distinction matters.
   **The census is not the evidence, and an earlier version of this document said it was.**
   For any `[t, n]` system of full column rank the dependent-row count is exactly `t − rank`,
   and the syndrome is one bit per dependent row, so "rank 4096 with 6133 of 16,384
@@ -112,17 +113,47 @@ the `"a"` field.
   and the `y` bits are the published objects they claim to be and that the instance is
   the size §3 says — not that the noise is "genuine" in any sense a random code lacks.
   Verified as C17, including the random control.
+- The published `y` is the **raw PRF output bit**, not the error vector: the 44 files carry
+  8,196 ones across 16,384 rows, so the error term `e` is baked into what is published. That is
+  the correct thing to publish for a decoding instance (`y = ⟨A,S⟩ ⊕ e` is what an attacker
+  gets), and it means the effective noise rate for anyone attacking `S` is the `τ=1/8` of the
+  engine, not the 50% the field values suggest.
 - The instance is **above** the decoding threshold (`t=16384` vs `n·H(τ)≈2226`, 7.4×),
   but decoding a random `[16384,4096]` code at `δ=1/8` costs Prange ≈ `(7/8)⁻⁴⁰⁹⁶ ≈ 2⁷⁸⁹`;
   BKW's correlation decays as `0.75^(2^a)`, so folding destroys the signal. Infeasible.
-- **Even a full recovery of `S` would not yield `R`.** [`S`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/keygen.hpp#L151)
-  ([`lpn_s_bits`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/keygen.hpp#L151)) is generated independently of [`prf_k`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/keygen.hpp#L87),
-  and [`prf_R_core`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/lpn.hpp#L376)
-  needs `top` from [`derive_aes_key(..., Dom::TOEP, ...)`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/lpn.hpp#L307),
-  which absorbs [`prf_k`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/keygen.hpp#L87). `dom` is folded into the **key** at
-  [lpn.hpp:331](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/lpn.hpp#L331),
-  not just the nonce, so the two streams are unrelated. The LPN samples are an independent
-  sub-challenge, not a step toward the plaintext.
+- **Even a full recovery of `S` would not yield `R` — and the reason is sharper than key
+  separation.** [`S`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/keygen.hpp#L151)
+  ([`lpn_s_bits`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/keygen.hpp#L151)) is indeed generated
+  independently of [`prf_k`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/keygen.hpp#L87), and
+  [`prf_R_core`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/lpn.hpp#L376) does need `top`
+  from [`derive_aes_key(…, Dom::TOEP, …)`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/lpn.hpp#L307),
+  which absorbs [`prf_k`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/keygen.hpp#L87); `dom` is folded into the
+  **key** at [lpn.hpp:331](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/lpn.hpp#L331), not just the nonce,
+  so the two streams are unrelated. That was the argument this document shipped first, and it
+  is true but weak: it justifies "separate prize" by pointing at a secret, when the structure
+  says something stronger.
+- **The real barrier is that `prf_R` reads 127 bits out of 16384.** [`toep_127_scalar`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/toeplitz.hpp#L121)
+  computes the full GF(2) convolution and then keeps only bits `0..126` of it
+  ([toeplitz.hpp:133](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/toeplitz.hpp#L133)), and convolution
+  bit `j` only sums inputs of index `≤ j`. So
+  `out_j = Σ_{i≤j} top_i · y_{j−i} mod 2`, every output bit is a triangular product, and
+  **no input bit at index ≥ 127 can reach the output at all**. `prf_R_core` allocates
+  `((16384 + 127 + 63)/64) = 258` words = **16,512 bits of `top`** at
+  [lpn.hpp:393](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/lpn.hpp#L393) and uses 127 of them;
+  16,385 are discarded. The same holds for `y`. Verified as C18, including the closed form
+  and a bit-exact port of `gf2_conv_scalar`.
+- **And the 127 bits of `y` that do matter are published in the clear.** Every one of the 44
+  sample files carries the `"y"` field for each row, so `y[0..126]` — the entire input to the
+  Toeplitz step — is handed out directly. This makes the LPN sub-challenge not merely
+  orthogonal to `R` but **redundant with respect to it**: an attacker who recovers all of `S`
+  obtains `y` for 16,384 rows, of which `prf_R` consumes 127, and those 127 are already in the
+  file. Recovering `S` cannot help with `R`, and the published instance cannot be *made* to
+  help by any choice of attack, because the map from `y` to the output discards all but 127
+  bits before the secret-dependent step even begins. C18 checks this on all 44 files.
+- Consequence for the bounty framing: the LPN target is a self-contained decoding problem with
+  a published answer-checking oracle, not a foothold. It is worth saying plainly because the
+  natural reading of "44 published LPN samples" is that they weaken the mask — they do not
+  touch it.
 
 ## 4. Provenance, verified
 
@@ -400,7 +431,7 @@ repository root.
 
 | file | role |
 |---|---|
-| [`verify.py`](verify.py) | the whole finding as 72 re-runnable checks |
+| [`verify.py`](verify.py) | the whole finding as 81 re-runnable checks |
 | [`RESULT.md`](RESULT.md) | this document |
 | [`parse.py`](parse.py) | PVAC v0x03 container parser (stdlib only) |
 | [`rist.py`](rist.py) | pure-Python Ristretto255 (stdlib only) |
@@ -412,3 +443,31 @@ repository root.
 at the repository root. The engine source it cites is deliberately not vendored: the
 citations are line-anchored links to a fixed upstream commit, so they stay resolvable
 without this repository carrying a copy of someone else's GPL-3.0 code.
+
+## 12. The shipped binding tool verifies a header, not a sample
+
+[`source/tools/verify_lpn_sample_binding.cpp`](../source/tools/verify_lpn_sample_binding.cpp)
+is the tool the challenge provides to answer "does this LPN sample belong to this ciphertext".
+It reads **one line** of the sample —
+[`read_first_line(argv[3])`](../source/tools/verify_lpn_sample_binding.cpp#L169) — parses it as
+a header, and compares four fields (`seed_ztag`, `nonce_lo_hex`, `nonce_hi_hex`,
+`public_T_hex`) against the wire targets at
+[:174-182](../source/tools/verify_lpn_sample_binding.cpp#L174). The 16,384 rows are never
+opened; the parameters `n`, `t`, `tau_num`, `tau_den`, `row_words` are parsed and never used;
+`cipher_index`, `layer_id` and `slot` are not compared at all.
+
+The predicate is therefore a property of the first line alone. C19 transcribes it and shows
+three mutations still returning `binding = 1`:
+
+| mutation | binds? |
+| --- | --- |
+| header with `cipher_index=999, layer_id=7, slot=3` | yes |
+| header with `n=1, t=1, tau_num=0, tau_den=1, row_words=1` | yes |
+| header only — all 16,384 rows deleted | yes |
+
+The published samples are genuine: all 44 headers do bind, and §3's measurements show the 44
+instances are distinct and correctly sized. The defect is scope, not correctness — the tool
+cannot tell the real instance from an empty file, so a third party can use it to check a
+label but not a claim. Closing the gap means streaming the rows and recomputing `public_T`
+from them, which is what `parse.py` and this suite already do.
+
