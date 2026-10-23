@@ -43,7 +43,7 @@ A tool has also been added to validate the public metadata binding between the L
 Reproduce the whole finding with one command:
 
 ```
-python solution/verify.py        # 36 checks, 0 failures, exit 0
+python solution/verify.py        # 59 checks, 0 failures, exit 0
 ```
 
 ## Layout
@@ -55,7 +55,7 @@ secret.ct  pk.bin  params.json  manifest.json  pvac_commit.txt  SHA256SUMS   pac
 lpn_samples/  source/                                                        package
 README.md                                                                    package body + this note
 solution/                                                                    fork only
-├── verify.py              36 checks; exit 0 = the finding reproduces
+├── verify.py              59 checks; exit 0 = the finding reproduces
 ├── RESULT.md              the written analysis
 ├── parse.py               PVAC v0x03 container parser (stdlib only)
 ├── rist.py                pure-Python Ristretto255 (stdlib only)
@@ -130,7 +130,7 @@ Everything under [`solution/`](solution/) is fork work; nothing above it was add
 
 | path | contents |
 | :--- | :--- |
-| [`solution/verify.py`](solution/verify.py) | the whole finding as 56 re-runnable checks |
+| [`solution/verify.py`](solution/verify.py) | the whole finding as 59 re-runnable checks |
 | [`solution/probe_container.py`](solution/probe_container.py) | the container measurement behind C9, including two full decodes of `pk.bin` |
 | [`solution/RESULT.md`](solution/RESULT.md) | the written analysis: wire shape, the hiding witness, every killed handle, the LPN bound |
 | [`solution/parse.py`](solution/parse.py) | PVAC v0x03 container parser (stdlib only) |

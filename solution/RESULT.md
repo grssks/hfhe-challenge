@@ -6,7 +6,7 @@ plaintext at all**. The 500,000 OCT bounty cannot be claimed by cryptanalysis of
 [`secret.ct`](../secret.ct); it requires [`sk.prf_k`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/keygen.hpp#L87), which is 256 bits of CSPRNG output
 that never leaves the generator's process.
 
-Reproduce: `python solution/verify.py` → **36 checks, 0 failures, exit 0**.
+Reproduce: `python solution/verify.py` → **59 checks, 0 failures, exit 0**.
 
 This analysis re-derives the scheme from the pinned engine source rather than inheriting
 any prior conclusion; where two readings disagreed, the disagreement was resolved by
@@ -152,6 +152,13 @@ Both of those statements are executed by [`verify.py`](verify.py) as C10, not as
   and [:749](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/ops/encrypt.hpp#L749)
   and never opened. Both are soundness/integrity defects. None of the three touches the
   plaintext.
+- The shipped audit [prints `wire_v3 = 1` from a string literal](../source/hfhe_bounty_artifact.cpp#L414)
+  in both `public_audit` and [`selftest`](../source/hfhe_bounty_artifact.cpp#L448): no value is
+  computed, so that line cannot fail and reports nothing about the artifact. The property it
+  names *is* enforced — [`deserialize_cipher`](../source/pvac_artifact_serialize.hpp#L204)
+  rejects any version byte other than `VERSION` — so this is an audit-reporting defect, not an
+  artifact defect. It is recorded because it is the same defect class §7 charges a third-party
+  tool with, found in the organiser's own audit path. Verified as C15.
 
 ## 6. The container does not pin its own payload
 
@@ -294,6 +301,32 @@ low-entropy payload (impossible here — no oracle exists to confirm it) or hold
 
 ---
 
+## 10. Upstream watch, and what this result does not cover
+
+Observed 2026-10-23, this session: the engine's `main` and `HEAD` are still at the pin
+`071b0e9`, and its three open pull refs (490, 499, 500) are the three reports §8 already
+treats — nothing new landed, so no finding above was re-established against a new tree. The
+challenge repository's `main` is at the LPN-sample clarification commit.
+
+Recorded so they are not mistaken for covered:
+
+- **No published field lets a third party verify any plaintext claim for this artifact.** §2's
+  witness is the reason: every `(v, m)` has an `(R_0, R_1)` that reproduces `(T_0, T_1)` exactly.
+  The fields that would otherwise bind a ciphertext to a key are the ones §5 finds inert — no
+  `R_com`, a Pedersen `PC` produced and never opened, per-edge `sigma` produced at four sites
+  and checked at none. So the only verifier in the world for "what `secret.ct` says" is
+  [`sk.prf_k`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/keygen.hpp#L87),
+  and a third-party "recovered plaintext" report is unverifiable by construction rather than
+  merely unsupported.
+- **The LPN bound is Prange/BKW, not ISD.** A Stern/BJMM estimate would tighten §3's 2^789. It
+  cannot change the conclusion, because `S` does not produce `R`.
+- **No rebuild.** This machine has no C++ toolchain (`g++` and `clang++` are both absent), so
+  every statement about the source is a reading of the pinned text, never a measurement of a
+  compiled binary. Routes that need a build are `inconclusive-needs(c++ toolchain)`, not done.
+- **No positive control for the length-window scorer.** A v1-era artifact, or one whose
+  plaintext had a known prefix, would test §2 and §8's scorer against a case where a recovery
+  *should* fire. This artifact supplies no such case.
+
 ### Files
 
 Everything below lives in `solution/`. The bounty package itself sits unmodified at the
@@ -301,7 +334,7 @@ repository root.
 
 | file | role |
 |---|---|
-| [`verify.py`](verify.py) | the whole finding as 56 re-runnable checks |
+| [`verify.py`](verify.py) | the whole finding as 59 re-runnable checks |
 | [`RESULT.md`](RESULT.md) | this document |
 | [`parse.py`](parse.py) | PVAC v0x03 container parser (stdlib only) |
 | [`rist.py`](rist.py) | pure-Python Ristretto255 (stdlib only) |

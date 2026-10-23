@@ -450,6 +450,42 @@ def main():
           len({rist.encode(p) for p in pts if p}) == 44,
           'bytes distinct: %d' % len(set(pcs)))
 
+    # ------------------- C15 the shipped audit prints a claim it never computes
+    # public_audit() and selftest() emit `wire_v3 = 1` from a string literal: no value
+    # is computed, so that line cannot fail and reports nothing about the artifact.
+    # The property it names *is* enforced elsewhere (the reader rejects any version
+    # byte other than VERSION, source/pvac_artifact_serialize.hpp:204), so the defect
+    # is in the audit's reporting, not in the artifact. It is the same class of defect
+    # RESULT.md section 7 charges a third-party tool with.
+    print('\nC15 the shipped audit prints a claim it never computes')
+    with open(os.path.join(ART, 'source', 'hfhe_bounty_artifact.cpp'), encoding='utf-8') as f:
+        gen = f.read()
+    literals = re.findall(r'"wire_v3 = 1\\n"', gen)
+    occurrences = re.findall(r'\bwire_v3\b', gen)
+    check('the audit emits wire_v3 from a string literal', len(literals) > 0,
+          '%d literal(s), in public_audit and selftest' % len(literals))
+    check('no wire_v3 value is ever computed', len(occurrences) == len(literals),
+          '%d identifier occurrences, all %d inside the printed literal'
+          % (len(occurrences), len(literals)))
+
+    # ------------------- C14 the docs state the count this run actually executes
+    # A check count in prose drifts the moment a check is added, and then the only
+    # thing that is wrong is the document -- silently. Read every stated count out of
+    # the two documents that make the promise and compare it with this run.
+    print('\nC14 the check count stated in the docs is the count this run executes')
+    total = CHECKS[0] + 1  # last check: this one counts itself, so total is the run
+    stated = []
+    for rel in ('README.md', os.path.join('solution', 'RESULT.md')):
+        with open(os.path.join(ART, rel), encoding='utf-8') as f:
+            text = f.read()
+        for m in re.finditer(r'(\d+)\s+(?:re-runnable\s+)?checks', text):
+            stated.append((rel, int(m.group(1))))
+    check('every stated check count equals the executed count',
+          bool(stated) and all(n == total for _, n in stated),
+          '%d statements across %d docs: %s; this run executes %d'
+          % (len(stated), len({r for r, _ in stated}),
+             sorted({n for _, n in stated}), total))
+
     # ---------------------------------------------------------------- verdict
     print('\n%s' % ('-' * 72))
     if FAILS:
