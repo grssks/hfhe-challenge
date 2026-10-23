@@ -6,7 +6,7 @@ plaintext at all**. The 500,000 OCT bounty cannot be claimed by cryptanalysis of
 [`secret.ct`](../secret.ct); it requires [`sk.prf_k`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/keygen.hpp#L87), which is 256 bits of CSPRNG output
 that never leaves the generator's process.
 
-Reproduce: `python solution/verify.py` → **81 checks, 0 failures, exit 0**.
+Reproduce: `python solution/verify.py` → **85 checks, 0 failures, exit 0**.
 
 This analysis re-derives the scheme from the pinned engine source rather than inheriting
 any prior conclusion; where two readings disagreed, the disagreement was resolved by
@@ -399,12 +399,13 @@ Recorded so they are not mistaken for covered:
   unverifiable by construction rather than merely unsupported.
 - **The LPN bound is Prange/BKW, not ISD.** A Stern/BJMM estimate would tighten §3's 2^789. It
   cannot change the conclusion, because `S` does not produce `R`.
-- **The suite's own accounting was wrong for two sessions and C18 now catches it.** Three
+- **The suite's own accounting was wrong for two sessions and C21 now catches it.** Five
   places in these documents kept promising a count the suite had outgrown, and one of them
-  already carried the newer number, so the file contradicted itself. C18 reads every stated
+  already carried the newer number, so the file contradicted itself. C21 reads every stated
   count out of both documents and fails when it differs from the run — which is how the drift
-  was found, and how it was found again while the census check was being added. The count is a property of
-  the tree, so it is read from the tree rather than written down once and forgotten.
+  was found, and how it was found again while the census check, the Toeplitz check and the
+  budget check were being added. The count is a property of the tree, so it is read from the
+  tree rather than written down once and forgotten.
 - **An earlier version of §3 claimed the noise census was evidence.** It is not: see §3's
   corrected wording. The figure is arithmetic and a random control reproduces it, so the claim
   was demoted to what it supports. C17 executes both halves so it cannot silently return.
@@ -413,7 +414,7 @@ Recorded so they are not mistaken for covered:
   this was the one defect in an otherwise correct citation set, and nothing in the suite could
   have caught it: C8 checks that a link is pinned and clickable, which is a claim about the URL,
   not about the code. C8b now resolves each anchor against a local clone at the pin and requires
-  the named symbol to appear inside the cited line window — 40 anchors enforced, 12 skipped
+  the named symbol to appear inside the cited line window — 43 anchors enforced, 12 skipped
   because their label names a concept (`sigma`, `S`) or a file pointer (`encrypt.hpp:779`) rather
   than an identifier. The skip rule is deliberate: demanding a literal match for a prose label
   would force the prose to be worse in order to satisfy the test.
@@ -431,7 +432,7 @@ repository root.
 
 | file | role |
 |---|---|
-| [`verify.py`](verify.py) | the whole finding as 81 re-runnable checks |
+| [`verify.py`](verify.py) | the whole finding as 85 re-runnable checks |
 | [`RESULT.md`](RESULT.md) | this document |
 | [`parse.py`](parse.py) | PVAC v0x03 container parser (stdlib only) |
 | [`rist.py`](rist.py) | pure-Python Ristretto255 (stdlib only) |
@@ -470,4 +471,77 @@ instances are distinct and correctly sized. The defect is scope, not correctness
 cannot tell the real instance from an empty file, so a third party can use it to check a
 label but not a claim. Closing the gap means streaming the rows and recomputing `public_T`
 from them, which is what `parse.py` and this suite already do.
+
+## 13. The advertised entropy budget is a staircase, not a slope
+
+[`params.json`](../params.json) publishes `noise_entropy_bits: 128` and
+`depth_slope_bits: 16`, and [`manifest.json`](../manifest.json) repeats the first. Read
+literally that is "128 bits of noise entropy at depth 0, and 16 more bits per level". What
+[`Budget::compute`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/ops/encrypt.hpp#L205)
+actually does is floor the cap twice:
+
+```cpp
+double cap = p.noise_entropy_bits + p.depth_slope_bits * std::max(0, d);      // :206
+double c2  = 2.0 * std::log2(p.B);  double c3 = 3.0 * std::log2(p.B);          // :207-208
+int q2 = floor(cap * p.tuple2_fraction / c2);                                  // :210
+int q3 = floor(cap * (1 - p.tuple2_fraction) / c3);                            // :211
+```
+
+The entropy actually drawn is `q2·c2 + q3·c3`, and with `B = 337` the two quanta are
+`c2 = 16.7932` and `c3 = 25.1898` bits. Both floors are coarse, so the model spends a
+**staircase** of whole tuple draws:
+
+| depth | cap | q₂ | q₃ | spent | shortfall |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 128 | 4 | 2 | 117.55 | 10.45 |
+| 1 | 144 | 4 | 2 | 117.55 | 26.45 |
+| 2 | 160 | 5 | 2 | 134.35 | 25.65 |
+| 3 | 176 | 5 | 3 | 159.54 | 16.46 |
+| 4 | 192 | 6 | 3 | 176.33 | 15.67 |
+| 5 | 208 | 6 | 3 | 176.33 | 31.67 |
+| 6 | 224 | 7 | 4 | 218.31 | 5.69 |
+| 7 | 240 | 7 | 4 | 218.31 | 21.69 |
+| 8 | 256 | 8 | 4 | 235.10 | 20.90 |
+| 9 | 272 | 8 | 4 | 235.10 | 36.90 |
+| 10 | 288 | 9 | 5 | 277.09 | 10.91 |
+| 11 | 304 | 9 | 5 | 277.09 | 26.91 |
+| 12 | 320 | 10 | 5 | 293.88 | 26.12 |
+| 13 | 336 | 11 | 6 | 335.86 | 0.14 |
+| 14 | 352 | 11 | 6 | 335.86 | 16.14 |
+| 15 | 368 | 12 | 6 | 352.66 | 15.34 |
+| 16 | 384 | 12 | 6 | 352.66 | 31.34 |
+| 17 | 400 | 13 | 7 | 394.64 | 5.36 |
+| 18 | 416 | 13 | 7 | 394.64 | 21.36 |
+| 19 | 432 | 14 | 7 | 411.43 | 20.57 |
+| 20 | 448 | 14 | 8 | 436.62 | 11.38 |
+| 21 | 464 | 15 | 8 | 453.42 | 10.58 |
+| 22 | 480 | 15 | 8 | 453.42 | 26.58 |
+
+Three things follow from that table, all of them arithmetic on the model's own definitions:
+
+- **Depth 0 does not deliver the advertised 128 bits.** It draws 117.55, a 10.45-bit gap
+  before the first level is even considered.
+- **Nine of the 22 steps add exactly zero bits** — `(0,1)`, `(4,5)`, `(6,7)`, `(8,9)`,
+  `(10,11)`, `(13,14)`, `(15,16)`, `(17,18)`, `(21,22)` — because neither floor moves across
+  the step. The artifact itself walks 21 of those steps (cipher 0 is depth 0 and `enc_text`
+  starts at depth 2), and eight of them are zero-gain. The advertised `depth_slope_bits: 16`
+  never appears as an increment: the only step sizes the model can produce are `0`, `16.79`,
+  `25.19` and `41.98` bits.
+- **No depth ever reaches its cap.** Mean shortfall 18.88 bits, worst 36.90 at `d = 9`
+  (272 advertised, 235.10 drawn), best 0.14 at `d = 13`.
+
+This is a mismatch between the published parameters and the code that consumes them, of the
+same class as §5's other provenance oddities, and it is invisible in the engine's own
+documentation: a grep of every `.md` in the pinned clone for `noise_entropy`, `tuple2` or
+`depth_slope` returns nothing, and [`validate_params`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/keygen.hpp#L17)
+never validates them. So `params.json` is the only description of this model, and it
+describes something the code does not do.
+
+**What this is not.** It is not a measured entropy loss in the artifact, and it is not a
+route to the plaintext. §2's hiding argument is a witness over the field — `T_0 = R_0·(v+m)`,
+`T_1 = R_1·(−m)` — and it does not consume the noise budget at all; likewise the edge counts
+in §4 are *consistent* with the staircase (`deltas in [-5,0]`), which is exactly why the
+staircase is visible from the wire rather than merely inferred from the source. Whether
+117.55 bits instead of 128 at depth 0 matters for the construction's claimed security is not
+decided here, and the honest report is the bound, not a verdict. Executed as C20.
 

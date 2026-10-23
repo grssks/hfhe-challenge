@@ -270,12 +270,17 @@ def main():
                 # Label may name the function (`rand_fp_nonzero`) or the call
                 # (`rand_fp_nonzero()`); strip a trailing call paren so both resolve to
                 # the definition. (`\b` cannot sit after `)` -- both sides are non-word.)
+                # A qualified label (`Budget::compute`) is checked under its trailing
+                # component too, because the definition line spells `static Budget
+                # compute(...)` while the qualified name only appears at the call sites.
                 bare = label.split('(')[0]
-                if not re.search(r'\b' + re.escape(bare) + r'\b', '\n'.join(body)):
+                cands = [bare] + ([bare.split('::')[-1]] if '::' in bare else [])
+                whole = '\n'.join(body)
+                if not any(re.search(r'\b' + re.escape(c) + r'\b', whole) for c in cands):
                     skipped += 1
                     continue
                 enforced += 1
-                if not re.search(r'\b' + re.escape(bare) + r'\b', window):
+                if not any(re.search(r'\b' + re.escape(c) + r'\b', window) for c in cands):
                     broken.append('%s -> %s#L%s (line reads: %s)'
                                   % (label, path, a, body[lo - 1].strip()[:60]))
     check('every engine anchor lands on the symbol it names',
@@ -835,21 +840,70 @@ def main():
           _binds(json.dumps(_hdr), _targets),
           'the 16384 rows are never read, so deleting them changes nothing')
 
-    # ------------------- C20 the docs state the count this run actually executes
+    # ------------------- C20 the advertised entropy budget is a staircase
+    # params.json and manifest.json advertise `noise_entropy_bits: 128` and
+    # `depth_slope_bits: 16`, which reads as "128 bits at depth 0, then 16 more per level".
+    # Budget::compute floors the cap twice (encrypt.hpp:210-211), so what the model actually
+    # spends is q2*c2 + q3*c3, and both floors are coarse: c2 = 2*log2(337) = 16.79 bits and
+    # c3 = 25.19 bits. Consequences, all arithmetic on the model's own definitions:
+    #   * depth 0 spends 117.55 bits, 10.45 below the advertised 128;
+    #   * nine of the 22 steps add zero bits, because neither floor moves;
+    #   * no depth ever reaches its cap (mean shortfall 18.88 bits, max 36.90 at d=9).
+    # This is a claim-vs-code mismatch in the *budget model*, not a claim about the cipher's
+    # security: whether 117.55 instead of 128 bits of noise matters is not decided here, and
+    # nothing below should be read as measuring a real entropy loss in the artifact.
+    print('\nC20 the advertised entropy budget is a staircase, not a slope')
+
+    def spent(d):
+        q2, q3 = budget(d)
+        return q2 * c2 + q3 * c3
+
+    caps = [prm['noise_entropy_bits'] + prm['depth_slope_bits'] * d for d in range(23)]
+    spent_all = [spent(d) for d in range(23)]
+    gains = [spent_all[d + 1] - spent_all[d] for d in range(22)]
+    zero = [(d, d + 1) for d in range(22) if abs(gains[d]) < 1e-9]
+    check('the budget is monotone, and exactly 9 of 22 steps add no entropy',
+          all(g >= -1e-9 for g in gains) and len(zero) == 9,
+          'zero-gain steps %s' % (zero,))
+    # Every step is a whole number of q2 draws and/or q3 draws, so the only possible
+    # increments are c2, c3, c2 + c3 -- nothing in between. A hypothetical continuous
+    # budget would show increments like 16.0 (the advertised slope), which never occur.
+    observed = sorted({round(g, 6) for g in gains})
+    legal = sorted({0.0, round(c2, 6), round(c3, 6), round(c2 + c3, 6)})
+    check('every step size is a whole number of tuple draws',
+          observed == legal,
+          'steps %s vs legal %s' % (observed, legal))
+    shortfalls = [c - s for c, s in zip(caps, spent_all)]
+    check('no depth ever reaches the advertised cap',
+          all(x > 0 for x in shortfalls),
+          'd=0 spends %.2f of 128; shortfall min %.2f (d=%d), max %.2f (d=%d), mean %.2f'
+          % (spent_all[0], min(shortfalls), shortfalls.index(min(shortfalls)),
+             max(shortfalls), shortfalls.index(max(shortfalls)),
+             sum(shortfalls) / len(shortfalls)))
+    # The wire only carries the depths enc_text produces, and cipher 0 is depth 0, so the
+    # sequence has a gap at d=1. Count the zero-gain steps the artifact itself walks.
+    wire_depths = sorted({0 if i == 0 else i + 1 for i in range(len(cts))})
+    wire_steps = list(zip(wire_depths, wire_depths[1:]))
+    wire_zero = [(a, b) for a, b in wire_steps if abs(spent(b) - spent(a)) < 1e-9]
+    check('8 of the 21 depth steps the artifact walks add no entropy',
+          len(wire_steps) == 21 and len(wire_zero) == 8,
+          '%d of %d steps: %s' % (len(wire_zero), len(wire_steps), wire_zero))
+
+    # ------------------- C21 the docs state the count this run actually executes
     # A check count in prose drifts the moment a check is added, and then the only
     # thing that is wrong is the document -- silently. Read every stated count out of
     # the two documents that make the promise and compare it with this run.
-    print('\nC20 the check count stated in the docs is the count this run executes')
+    print('\nC21 the check count stated in the docs is the count this run executes')
     # Position independence: this block must be the last thing that calls check(), so
     # the suite proves that structurally instead of trusting where the block was pasted.
     # (It was pasted in the wrong place twice, and both times the count came out one
     # too high while every other check still passed.)
     # Built from parts so this guard cannot match its own source text.
     _hdr = '# ' + '-' * 19 + ' C'
-    _body = src_text[src_text.index(_hdr + '20'):]
-    assert _body.count(_hdr) == 1, 'C20 must be the last numbered section'
+    _body = src_text[src_text.index(_hdr + '21'):]
+    assert _body.count(_hdr) == 1, 'C21 must be the last numbered section'
     _n = _body.count('\n' + ' ' * 4 + 'check(')
-    assert _n == 1, 'C20 must be the final check (found %d calls in its section)' % _n
+    assert _n == 1, 'C21 must be the final check (found %d calls in its section)' % _n
     total = CHECKS[0] + 1  # this check counts itself, so the total is the run
     stated = []
     for rel in ('README.md', os.path.join('solution', 'RESULT.md')):
