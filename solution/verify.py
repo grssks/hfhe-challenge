@@ -14,6 +14,9 @@ import json
 import math
 import struct
 import hashlib
+import subprocess
+
+import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -36,6 +39,11 @@ def check(name, cond, detail=''):
         print('  FAIL %-58s %s' % (name, detail))
         FAILS.append(name)
     return cond
+
+
+# The file's own text, so a check can assert something about where it sits.
+with open(os.path.abspath(__file__), encoding='utf-8') as _f:
+    src_text = _f.read()
 
 
 def main():
@@ -220,6 +228,61 @@ def main():
     moving = [rel for rel, text in docs.items()
               if re.search(r'pvac_hfhe_cpp/(blob|tree)/(main|master)\b', text)]
     check('no citation points at a moving branch', not moving, ', '.join(moving) or 'none')
+
+    # ------------------------------- C8b every engine anchor resolves to its symbol
+    # C8 proves the citations are pinned and clickable. That is a claim about the URL,
+    # not about the code: a link can point at the right commit and the wrong line, and
+    # nothing above would notice. One such citation shipped (`dec_text` linked to :39,
+    # which is `enc_text`; `dec_text` is at :63) and the suite was green.
+    #
+    # A local clone at the pin is what makes this checkable at all, so the check is
+    # bounded by it: with no clone the anchors are recorded as unresolved rather than
+    # passed, and the detail line says so.
+    print('\nC8b every engine anchor lands on the symbol it names')
+    clone = os.environ.get('PVAC_HFHE_CPP') or os.path.join(os.path.dirname(ART), 'pvac_hfhe_cpp')
+    at_pin = False
+    if os.path.isdir(os.path.join(clone, '.git')):
+        try:
+            head = subprocess.run(['git', '-C', clone, 'rev-parse', 'HEAD'],
+                                  capture_output=True, text=True, timeout=30).stdout.strip()
+            at_pin = (head == pin)
+        except Exception:
+            at_pin = False
+    cite_re = re.compile(r'\[`([^`]+)`\]\(https://' + re.escape(blob) + r'([^)#]+)#L(\d+)(?:-L?(\d+))?\)')
+    enforced = skipped = 0
+    broken = []
+    if at_pin:
+        for rel, text in docs.items():
+            for label, path, a, b in cite_re.findall(text):
+                f = os.path.join(clone, path)
+                if not os.path.exists(f):
+                    broken.append('%s -> missing file %s' % (label, path))
+                    continue
+                body = open(f, encoding='utf-8', errors='replace').read().splitlines()
+                lo, hi = int(a), int(b) if b else int(a)
+                window = '\n'.join(body[lo - 1:hi])
+                # Only labels that name an identifier defined in the cited file can be
+                # checked this way. Labels that are prose ("PC = R^-1 G + rho H"), file
+                # pointers ("encrypt.hpp:779") or bare concepts ("sigma", "S") name no
+                # identifier, and demanding a literal match for them would force the
+                # prose to be worse in order to satisfy the test.
+                # Label may name the function (`rand_fp_nonzero`) or the call
+                # (`rand_fp_nonzero()`); strip a trailing call paren so both resolve to
+                # the definition. (`\b` cannot sit after `)` -- both sides are non-word.)
+                bare = label.split('(')[0]
+                if not re.search(r'\b' + re.escape(bare) + r'\b', '\n'.join(body)):
+                    skipped += 1
+                    continue
+                enforced += 1
+                if not re.search(r'\b' + re.escape(bare) + r'\b', window):
+                    broken.append('%s -> %s#L%s (line reads: %s)'
+                                  % (label, path, a, body[lo - 1].strip()[:60]))
+    check('every engine anchor lands on the symbol it names',
+          at_pin and not broken and enforced >= 20,
+          '%d enforced, %d skipped (label names no identifier), %d broken%s'
+          % (enforced, skipped, len(broken),
+             ': ' + '; '.join(broken[:4]) if broken else
+             ('' if at_pin else ' -- no clone at the pin (%s), anchors unresolved' % clone)))
 
     # ------------------------------- C9 the container does not pin its own payload
     # The compressed container (include/pvac/core/pvac_compress.hpp at the pin) is an
@@ -450,14 +513,69 @@ def main():
           len({rist.encode(p) for p in pts if p}) == 44,
           'bytes distinct: %d' % len(set(pcs)))
 
-    # ------------------- C15 the shipped audit prints a claim it never computes
+    # ------------------- C14 the check ids are unique and every cited id exists
+    # Renumbering a section is invisible until a reader follows a citation into the wrong
+    # claim: C15 meant "the count is reconciled" for one commit and "sigma is unchecked"
+    # for the next, and during this session two sections were briefly labelled C18 at once.
+    # Two things are machine-checkable and both are worth checking: no id is used twice,
+    # and no document cites an id this suite does not run. Whether a citation points at the
+    # *right* claim is not machine-checkable from word overlap (26 citations, 16 share no
+    # content word with their header and are nonetheless correct), so that part is a
+    # reading, recorded here rather than pretended to be a test.
+    print('\nC14 the check ids are unique and every cited id exists')
+    ids = re.findall(r'-{6,} (C\d+) ', src_text)
+    dupes = sorted({i for i in ids if ids.count(i) > 1})
+    check('no check id is used twice', not dupes,
+          'duplicate: %s' % dupes if dupes else '%d ids, all unique' % len(ids))
+    check('ids run 1..N with no gap',
+          ids == ['C%d' % i for i in range(1, len(ids) + 1)],
+          'order: %s' % ', '.join(ids))
+    cited = []
+    for rel in ('README.md', os.path.join('solution', 'RESULT.md')):
+        with open(os.path.join(ART, rel), encoding='utf-8') as f:
+            for lineno, line in enumerate(f, 1):
+                for m in re.finditer(r'\bC(\d+)\b', line):
+                    cited.append((rel, lineno, 'C' + m.group(1)))
+    known = set(ids)
+    unknown = [c for c in cited if c[2] not in known]
+    check('every cited check id exists in the suite', not unknown,
+          'unknown: %s' % unknown[:5] if unknown else
+          '%d citations, %d distinct ids, all present' % (len(cited), len({c[2] for c in cited})))
+
+    # ------------------- C15 the sigma field is published and nothing checks it
+    # Section 10 claims the integrity fields bind nothing. A first draft of that claim
+    # said sigma is "not on the wire at all" -- wrong, and this check is what caught it:
+    # every edge record carries a 8192-bit sigma (128 words), all 1829 distinct. So the
+    # honest statement is narrower and stronger: the field is published in full, and no
+    # verifier in the artifact, in the pinned engine's decrypt path, or in this suite ever
+    # recomputes it. A published-but-unchecked field is a decoy, not a commitment.
+    print('\nC15 the per-edge sigma is published and verified by nothing')
+    sig = [e['s'] for c in cts for e in c['E']]
+    check('every edge carries a sigma', len(sig) == sum(len(c['E']) for c in cts),
+          '%d sigma values over %d edges' % (len(sig), len(sig)))
+    check('sigma is 8192 bits wide as the engine declares',
+          {e['s_nbits'] for c in cts for e in c['E']} == {8192},
+          '128 words per sigma')
+    check('all sigmas are distinct (no constant filler)', len(set(sig)) == len(sig),
+          '%d distinct of %d' % (len(set(sig)), len(sig)))
+    # What the bundle does NOT publish: a way to relate any of it to a plaintext.
+    # dec_text needs R, R comes from prf_R(pk, sk, seed), and no field carries a seed.
+    layer_keys = {k for c in cts for L in c['L'] for k in L}
+    check('no layer record carries an opening or a seed',
+          layer_keys == {'PC', 'nhi', 'nlo', 'rule', 'ztag'},
+          'layer members: %s' % ', '.join(sorted(layer_keys)))
+    check('no cipher record carries a recryption transcript or proof',
+          {k for c in cts for k in c} == {'E', 'L', 'c0', 'raw_len', 'slots'},
+          'cipher members: E, L, c0, raw_len, slots')
+
+    # ------------------- C16 the shipped audit prints a claim it never computes
     # public_audit() and selftest() emit `wire_v3 = 1` from a string literal: no value
     # is computed, so that line cannot fail and reports nothing about the artifact.
     # The property it names *is* enforced elsewhere (the reader rejects any version
     # byte other than VERSION, source/pvac_artifact_serialize.hpp:204), so the defect
     # is in the audit's reporting, not in the artifact. It is the same class of defect
     # RESULT.md section 7 charges a third-party tool with.
-    print('\nC15 the shipped audit prints a claim it never computes')
+    print('\nC16 the shipped audit prints a claim it never computes')
     with open(os.path.join(ART, 'source', 'hfhe_bounty_artifact.cpp'), encoding='utf-8') as f:
         gen = f.read()
     literals = re.findall(r'"wire_v3 = 1\\n"', gen)
@@ -468,18 +586,102 @@ def main():
           '%d identifier occurrences, all %d inside the printed literal'
           % (len(occurrences), len(literals)))
 
-    # ------------------- C14 the docs state the count this run actually executes
+    # ------------------- C17 the LPN noise census in RESULT.md is a measurement
+    # RESULT.md section 3 reports "rank 4096 with 6133/16384 (37.4%) inconsistent rows"
+    # as evidence that the noise is genuine. It is not evidence. For any [t, n] system of
+    # full column rank the dependent-row count is exactly t - rank, and the syndrome is
+    # one bit per dependent row, so a random dense system of the same shape reproduces
+    # the whole census. What would distinguish real LPN noise is a syndrome weight
+    # distinguishable from a fair coin -- and 6133 against 6144 expected is 0.2 sigma.
+    # This check executes both halves so the document cannot keep the stronger claim.
+    print('\nC17 the LPN noise census is arithmetic, not evidence')
+
+    def lpn_census(rows, y):
+        """Streaming GF(2) elimination: (rank, dependent rows, inconsistent rows)."""
+        A = rows.copy()
+        z = y.copy()
+        used = np.zeros(A.shape[0], dtype=bool)
+        rank = 0
+        for bit in range(A.shape[1] * 64):
+            w, i = divmod(bit, 64)
+            col = np.nonzero((A[:, w] >> np.uint64(i)) & np.uint64(1))[0]
+            if col.size == 0:
+                continue
+            free = col[~used[col]]
+            if free.size == 0:
+                continue
+            piv = free[0]
+            used[piv] = True
+            rank += 1
+            rest = free[1:]
+            if rest.size:
+                A[rest] ^= A[piv]
+                z[rest] ^= z[piv]
+        return rank, int((~used).sum()), int(z[~used].sum())
+
+    sample = os.path.join(ART, 'lpn_samples', 'ct00_l0_s0_pvac_prf_r_1.jsonl')
+    a_rows, a_y = [], []
+    with open(sample) as f:
+        json.loads(f.readline())  # header
+        for line in f:
+            rec = json.loads(line)
+            a_rows.append(np.frombuffer(bytes.fromhex(rec['a']), dtype='<u8'))
+            a_y.append(rec['y'])
+    A = np.array(a_rows, dtype=np.uint64)
+    y = np.array(a_y, dtype=np.uint8)
+    rank, dep, incons = lpn_census(A, y)
+    check('the published instance has full column rank', rank == 4096,
+          'rank %d of n=4096 over t=%d rows' % (rank, len(a_y)))
+    check('the dependent-row count is exactly t - rank, not a measurement',
+          dep == len(a_y) - rank,
+          '%d dependent = %d rows - rank %d' % (dep, len(a_y), rank))
+    check('the syndrome weight is within one sigma of a fair coin',
+          abs(incons - dep / 2.0) / math.sqrt(dep / 4.0) < 3.0,
+          '%d inconsistent vs %.0f +- %.0f expected (%.2f sigma); the published 37.4%% '
+          'is this ratio, and it is what a random code gives'
+          % (incons, dep / 2.0, math.sqrt(dep / 4.0),
+             (incons - dep / 2.0) / math.sqrt(dep / 4.0)))
+
+    rng = np.random.default_rng(20261023)
+    # full 64 bits per word: an RNG capped at 2**63 would leave bit 63 dead and the
+    # control would top out at rank 63*n/64, which is a property of the control, not
+    # of the instance under test.
+    R = rng.integers(0, 256, size=(len(a_y), A.shape[1] * 8), dtype=np.uint8).view('<u8')
+    ry = rng.integers(0, 2, size=len(a_y)).astype(np.uint8)
+    r_rank, r_dep, r_incons = lpn_census(R, ry)
+    check('a random dense system of the same shape gives the same census',
+          (r_rank, r_dep) == (rank, dep) and abs(r_incons - incons) / math.sqrt(dep / 4.0) < 3.0,
+          'rank %d, dependent %d, inconsistent %d' % (r_rank, r_dep, r_incons))
+
+    # ------------------- C18 the docs state the count this run actually executes
     # A check count in prose drifts the moment a check is added, and then the only
     # thing that is wrong is the document -- silently. Read every stated count out of
     # the two documents that make the promise and compare it with this run.
-    print('\nC14 the check count stated in the docs is the count this run executes')
-    total = CHECKS[0] + 1  # last check: this one counts itself, so total is the run
+    print('\nC18 the check count stated in the docs is the count this run executes')
+    # Position independence: this block must be the last thing that calls check(), so
+    # the suite proves that structurally instead of trusting where the block was pasted.
+    # (It was pasted in the wrong place twice, and both times the count came out one
+    # too high while every other check still passed.)
+    # Built from parts so this guard cannot match its own source text.
+    _hdr = '# ' + '-' * 19 + ' C'
+    _body = src_text[src_text.index(_hdr + '18'):]
+    assert _body.count(_hdr) == 1, 'C18 must be the last numbered section'
+    _n = _body.count('\n' + ' ' * 4 + 'check(')
+    assert _n == 1, 'C18 must be the final check (found %d calls in its section)' % _n
+    total = CHECKS[0] + 1  # this check counts itself, so the total is the run
     stated = []
     for rel in ('README.md', os.path.join('solution', 'RESULT.md')):
         with open(os.path.join(ART, rel), encoding='utf-8') as f:
             text = f.read()
-        for m in re.finditer(r'(\d+)\s+(?:re-runnable\s+)?checks', text):
-            stated.append((rel, int(m.group(1))))
+        # Only lines that make the promise count as a claim: a sentence that *discusses*
+        # an old number must not be read as asserting it. ponytail: a prose rewrite that
+        # drops "verify.py" / "exit 0" / "re-runnable" from a claim line would hide it
+        # from this check; add the phrasing to CLAIM_HINTS if a new form is introduced.
+        for line in text.splitlines():
+            if not any(h in line for h in ('verify.py', 'exit 0', 're-runnable')):
+                continue
+            for m in re.finditer(r'(\d+)\s+(?:re-runnable\s+)?checks', line):
+                stated.append((rel, int(m.group(1))))
     check('every stated check count equals the executed count',
           bool(stated) and all(n == total for _, n in stated),
           '%d statements across %d docs: %s; this run executes %d'

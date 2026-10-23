@@ -43,7 +43,7 @@ A tool has also been added to validate the public metadata binding between the L
 Reproduce the whole finding with one command:
 
 ```
-python solution/verify.py        # 59 checks, 0 failures, exit 0
+python solution/verify.py        # 72 checks, 0 failures, exit 0
 ```
 
 ## Layout
@@ -55,7 +55,7 @@ secret.ct  pk.bin  params.json  manifest.json  pvac_commit.txt  SHA256SUMS   pac
 lpn_samples/  source/                                                        package
 README.md                                                                    package body + this note
 solution/                                                                    fork only
-├── verify.py              59 checks; exit 0 = the finding reproduces
+├── verify.py              72 checks; exit 0 = the finding reproduces
 ├── RESULT.md              the written analysis
 ├── parse.py               PVAC v0x03 container parser (stdlib only)
 ├── rist.py                pure-Python Ristretto255 (stdlib only)
@@ -98,13 +98,13 @@ Algebraically: `R` is uniform over `F_p*`, so `T = R·v` is uniform over `F_p*` 
 | degenerate build (`R = 1`, `T ∈ ⟨g⟩`) | 0/44 aggregates lie in the order-337 subgroup |
 | `T` leaking through a small multiple | the same length window is the only high-signal discriminator, and it stays quiet |
 
-Deeper measurements — the LPN noise census, the [`prf_k`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/keygen.hpp#L87) consumer sweep, the [`sigma`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/matrix.hpp#L298)/[`PC`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/core/types.hpp#L96) call-site audit — are recorded in [`solution/RESULT.md`](solution/RESULT.md).
+Deeper measurements — the [`prf_k`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/keygen.hpp#L87) consumer sweep, the [`sigma`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/matrix.hpp#L298)/[`PC`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/core/types.hpp#L96) call-site audit — are recorded in [`solution/RESULT.md`](solution/RESULT.md).
 
 ## The LPN side target is a separate prize
 
 `lpn_samples/` publishes the complete `y = ⟨A, S⟩ ⊕ e` instance for all 44 BASE layers (`n = 4096`, `t = 16384`, `τ = 1/8`), including the entire `A` matrix.
 
-- The noise is genuine: streaming GF(2) elimination gives **rank 4096 with 6,133/16,384 (37.4%) inconsistent rows** — the signature of real LPN noise. Gaussian elimination does not recover `S`.
+- Gaussian elimination does not recover `S`: the instance has full column rank 4096 over 16,384 rows, so elimination ends with 12,288 unsatisfied equations. That census is **arithmetic, not evidence** — a random code of the same shape gives the same shape, and the 6,133 inconsistent rows sit 0.20σ from the 6,144 a fair coin predicts. Verified as C17, random control included.
 - The instance sits above the decoding threshold (`t = 16384` vs `n·H(τ) ≈ 2226`, 7.4×), but decoding a random `[16384, 4096]` code at `δ = 1/8` costs Prange ≈ `(7/8)⁻⁴⁰⁹⁶ ≈ 2⁷⁸⁹`; BKW's correlation decays as `0.75^(2^a)`, so folding destroys the signal.
 - **Even full recovery of `S` would not yield `R`.** [`S`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/keygen.hpp#L151) is generated independently of [`prf_k`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/keygen.hpp#L87), and [`prf_R_core`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/lpn.hpp#L376) additionally needs `top` from [`derive_aes_key(…, Dom::TOEP, …)`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/lpn.hpp#L307), which absorbs [`prf_k`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/keygen.hpp#L87). `dom` enters the AES **key** ([lpn.hpp:331](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/lpn.hpp#L331)), so the published `A` rows and the Toeplitz stream are different keys.
 
@@ -130,7 +130,7 @@ Everything under [`solution/`](solution/) is fork work; nothing above it was add
 
 | path | contents |
 | :--- | :--- |
-| [`solution/verify.py`](solution/verify.py) | the whole finding as 59 re-runnable checks |
+| [`solution/verify.py`](solution/verify.py) | the whole finding as 72 re-runnable checks |
 | [`solution/probe_container.py`](solution/probe_container.py) | the container measurement behind C9, including two full decodes of `pk.bin` |
 | [`solution/RESULT.md`](solution/RESULT.md) | the written analysis: wire shape, the hiding witness, every killed handle, the LPN bound |
 | [`solution/parse.py`](solution/parse.py) | PVAC v0x03 container parser (stdlib only) |

@@ -6,7 +6,7 @@ plaintext at all**. The 500,000 OCT bounty cannot be claimed by cryptanalysis of
 [`secret.ct`](../secret.ct); it requires [`sk.prf_k`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/keygen.hpp#L87), which is 256 bits of CSPRNG output
 that never leaves the generator's process.
 
-Reproduce: `python solution/verify.py` → **59 checks, 0 failures, exit 0**.
+Reproduce: `python solution/verify.py` → **72 checks, 0 failures, exit 0**.
 
 This analysis re-derives the scheme from the pinned engine source rather than inheriting
 any prior conclusion; where two readings disagreed, the disagreement was resolved by
@@ -99,9 +99,19 @@ for all plaintexts. The artifact is an information-theoretic OTP, not a computat
 `y = ⟨A,S⟩ ⊕ e` instance: `n=4096`, `t=16384`, `τ=1/8`, with the **entire `A` matrix** as
 the `"a"` field.
 
-- Noise is genuine: streaming GF(2) elimination gives **rank 4096 with 6133/16384
-  (37.4%) inconsistent rows** — the exact signature of LPN noise. Gaussian elimination
-  does **not** recover `S`.
+- Noise is genuine: Gaussian elimination does **not** recover `S` — the instance has full
+  column rank 4096 over 16,384 rows and the dependent rows carry a syndrome bit, so
+  elimination terminates with 12,288 unsatisfied equations and no solution.
+  **The census is not the evidence, and an earlier version of this document said it was.**
+  For any `[t, n]` system of full column rank the dependent-row count is exactly `t − rank`,
+  and the syndrome is one bit per dependent row, so "rank 4096 with 6133 of 16,384
+  inconsistent" is arithmetic: a random dense system of the same shape gives rank 4096,
+  12,288 dependent rows and 6,099 inconsistent rows. The published 6,133 sits **−0.20σ**
+  from the 6,144 a fair coin predicts, so the syndrome weight distinguishes this instance
+  from a random one by nothing. What the sample files *do* establish is that the `A` rows
+  and the `y` bits are the published objects they claim to be and that the instance is
+  the size §3 says — not that the noise is "genuine" in any sense a random code lacks.
+  Verified as C17, including the random control.
 - The instance is **above** the decoding threshold (`t=16384` vs `n·H(τ)≈2226`, 7.4×),
   but decoding a random `[16384,4096]` code at `δ=1/8` costs Prange ≈ `(7/8)⁻⁴⁰⁹⁶ ≈ 2⁷⁸⁹`;
   BKW's correlation decays as `0.75^(2^a)`, so folding destroys the signal. Infeasible.
@@ -301,7 +311,49 @@ low-entropy payload (impossible here — no oracle exists to confirm it) or hold
 
 ---
 
-## 10. Upstream watch, and what this result does not cover
+## 10. A soundness question the cipher does not answer: which ciphertext is the bounty
+
+Everything above is a confidentiality result, and §5 recorded the integrity fields as inert
+without asking what that costs. It costs the claim, not the plaintext.
+
+A verifier holding `sk` decides "this ciphertext decrypts to that plaintext" by running
+[`dec_text`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/utils/text.hpp#L63)
+and comparing. The published artifact offers no such route to anyone else:
+
+| what would bind a cipher to a key | state in this artifact | measured |
+|---|---|---|
+| `R_com`, the offline guess oracle (v1's bug) | absent from the wire | C1: exact byte consumption, no trailer |
+| Pedersen `PC = R⁻¹·G + rho·H` | one per BASE layer, produced at [encrypt.hpp:728](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/ops/encrypt.hpp#L728) and [:749](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/ops/encrypt.hpp#L749), never opened | 44 well-formed points (C13), and nothing verifies them against anything |
+| per-edge `sigma`, 8192 bits each | produced at four sites ([arithmetic.hpp:62](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/ops/arithmetic.hpp#L62), [:67](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/ops/arithmetic.hpp#L67), [encrypt.hpp:386](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/ops/encrypt.hpp#L386), [:390](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/ops/encrypt.hpp#L390)), verified at none | **published in full and checked by nothing**: all 1829 edges carry a distinct 128-word sigma, and no verifier recomputes one (C15). An earlier draft of this table said sigma was absent from the wire; the measurement corrected it, and the corrected form is the worse of the two — a decoy is harder to notice than a gap |
+| the container's own digest | none | C9: an all-zero suffix changes the file's sha256 and not its payload |
+
+So the only statement a third party can make about `secret.ct` is about its **shape** — 22
+ciphers, 44 BASE layers, 1829 edges inside the budget model (C10), 44 canonical commitments
+(C13) — and shape is not content. Two consequences follow, and they are the reason this
+section exists:
+
+1. **A "recovered plaintext" claim for this artifact is unverifiable by construction**, not
+   merely unsupported. §2 supplies the witness: for every `(v, m)` there is an `(R_0, R_1)`
+   that reproduces `(T_0, T_1)` exactly, so any claimed plaintext is consistent with the wire
+   and no computation on public data can rank one claim above another. Verification requires
+   `sk`, which is exactly what the bounty asks for.
+2. **The artifact's own authenticity is shape-deep.** An attacker who rebuilds the bundle with
+   different plaintext under a key they generate produces a `secret.ct` that passes every
+   public structural check in this document, because none of those checks reaches the key. The
+   published `SHA256SUMS` is the only binding, and C9 shows a compressed artifact can be
+   extended without changing what it decodes to — so the digest binds a byte string, not a
+   semantic object.
+
+This does not weaken §2 and it does not make the bounty claimable; it is the mirror image.
+Perfect hiding means the ciphertext carries no verifiable trace of the plaintext, and
+verifiability of "this is the organiser's ciphertext" would be exactly such a trace. The
+construction is self-consistent: the same property that makes it unbreakable makes it
+un-attestable. Recorded here so the two are not confused for each other in either direction —
+nobody should read §5's inert fields as "a leak was missed", and nobody should read §2 as
+"the artifact is sound" when what was proven is "the artifact is opaque".
+
+
+## 11. Upstream watch, and what this result does not cover
 
 Observed 2026-10-23, this session: the engine's `main` and `HEAD` are still at the pin
 `071b0e9`, and its three open pull refs (490, 499, 500) are the three reports §8 already
@@ -310,16 +362,30 @@ challenge repository's `main` is at the LPN-sample clarification commit.
 
 Recorded so they are not mistaken for covered:
 
-- **No published field lets a third party verify any plaintext claim for this artifact.** §2's
-  witness is the reason: every `(v, m)` has an `(R_0, R_1)` that reproduces `(T_0, T_1)` exactly.
-  The fields that would otherwise bind a ciphertext to a key are the ones §5 finds inert — no
-  `R_com`, a Pedersen `PC` produced and never opened, per-edge `sigma` produced at four sites
-  and checked at none. So the only verifier in the world for "what `secret.ct` says" is
-  [`sk.prf_k`](https://github.com/octra-labs/pvac_hfhe_cpp/blob/071b0e909c119de815e284b347c4bd979cb59ef3/include/pvac/crypto/keygen.hpp#L87),
-  and a third-party "recovered plaintext" report is unverifiable by construction rather than
-  merely unsupported.
+- **Attestability, in full, is §10's subject** — it is listed here only so this section's
+  "not covered" list is complete. The short form: no published field lets a third party verify
+  a plaintext claim for this artifact, so a third-party "recovered plaintext" report is
+  unverifiable by construction rather than merely unsupported.
 - **The LPN bound is Prange/BKW, not ISD.** A Stern/BJMM estimate would tighten §3's 2^789. It
   cannot change the conclusion, because `S` does not produce `R`.
+- **The suite's own accounting was wrong for two sessions and C18 now catches it.** Three
+  places in these documents kept promising a count the suite had outgrown, and one of them
+  already carried the newer number, so the file contradicted itself. C18 reads every stated
+  count out of both documents and fails when it differs from the run — which is how the drift
+  was found, and how it was found again while the census check was being added. The count is a property of
+  the tree, so it is read from the tree rather than written down once and forgotten.
+- **An earlier version of §3 claimed the noise census was evidence.** It is not: see §3's
+  corrected wording. The figure is arithmetic and a random control reproduces it, so the claim
+  was demoted to what it supports. C17 executes both halves so it cannot silently return.
+- **One engine citation shipped pointing at the wrong line.** `dec_text` was linked to
+  `text.hpp#L39`, which is `enc_text`; `dec_text` is at `:63`. Every other anchor resolved, so
+  this was the one defect in an otherwise correct citation set, and nothing in the suite could
+  have caught it: C8 checks that a link is pinned and clickable, which is a claim about the URL,
+  not about the code. C8b now resolves each anchor against a local clone at the pin and requires
+  the named symbol to appear inside the cited line window — 40 anchors enforced, 12 skipped
+  because their label names a concept (`sigma`, `S`) or a file pointer (`encrypt.hpp:779`) rather
+  than an identifier. The skip rule is deliberate: demanding a literal match for a prose label
+  would force the prose to be worse in order to satisfy the test.
 - **No rebuild.** This machine has no C++ toolchain (`g++` and `clang++` are both absent), so
   every statement about the source is a reading of the pinned text, never a measurement of a
   compiled binary. Routes that need a build are `inconclusive-needs(c++ toolchain)`, not done.
@@ -334,7 +400,7 @@ repository root.
 
 | file | role |
 |---|---|
-| [`verify.py`](verify.py) | the whole finding as 59 re-runnable checks |
+| [`verify.py`](verify.py) | the whole finding as 72 re-runnable checks |
 | [`RESULT.md`](RESULT.md) | this document |
 | [`parse.py`](parse.py) | PVAC v0x03 container parser (stdlib only) |
 | [`rist.py`](rist.py) | pure-Python Ristretto255 (stdlib only) |
