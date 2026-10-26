@@ -138,30 +138,37 @@ def part_a():
         ('4 KiB zero bytes', b'\x00' * 4096),
         ('1 0xff byte', b'\xff'),
         ('64 0xff bytes', b'\xff' * 64),
-        ('64 random bytes', os.urandom(64)),
+        ('zero-pad + non-zero payload', b'\x00' * 16 + b'MALICIOUS_PAYLOAD_HERE'),
     ]
     zero_ok = True
-    nonzero_brittle = True
+    ff_rejected = True
+    tail_ignored = False
     print('  %-22s %-10s %-9s %s' % ('suffix', 'outcome', 'payload', 'position'))
     for name, tail in cases:
         try:
             got, pos = unpack_measured(base + tail)
             outcome = 'identical' if got == raw else 'DIFFERENT'
-            if tail and tail.strip(b'\x00'):
-                nonzero_brittle = nonzero_brittle and outcome != 'identical'
+            if '0xff' in name:
+                ff_rejected = False
+            if 'zero-pad + non-zero' in name:
+                tail_ignored = (got == raw) and (pos < len(base + tail))
             if not tail.strip(b'\x00'):
                 zero_ok = zero_ok and outcome == 'identical'
         except ValueError as exc:
             outcome = str(exc)
             pos = '-'
+            if '0xff' in name:
+                ff_rejected = ff_rejected and True
             if not tail.strip(b'\x00'):
                 zero_ok = False
         print('  %-22s %-10s %-9d %s' % (name, outcome[:10], len(base) - 5, pos))
 
     check('an all-zero suffix still decodes to the identical payload', zero_ok,
           'so one payload has many valid byte strings')
-    check('a NON-zero suffix is rejected, not silently ignored', nonzero_brittle,
-          'the decoder pulls the suffix into its code register before EOF')
+    check('an immediate 0xff suffix is rejected, not silently ignored', ff_rejected,
+          'the decoder pulls 0xff into its code register before EOF')
+    check('a non-zero payload past EOF pad is silently accepted', tail_ignored,
+          'bytes past the EOF renormalisation window are never read')
 
     # the decisive pair: two byte strings, different digests, same payload
     a = base

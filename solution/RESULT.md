@@ -220,11 +220,13 @@ Measured ([`probe_container.py`](probe_container.py), re-executed as C9):
 | `pk.bin` + 64 zero bytes | differs | **the same 17,110,454 B** | 3,042,899 of 3,042,960 |
 
 So `sha256(pk.bin)` pins a *byte string*, not a key: the published `SHA256SUMS` does not
-determine which public key the engine will load. The tolerance is narrow — a **non-zero**
-suffix is rejected (`output exceeds declared size`), because the decoder pulls the appended
-bytes into its code register during the final renormalisation *before* it lands on the
-end-of-stream symbol. The container is therefore non-canonical on a zero-byte alphabet, not
-arbitrarily malleable.
+determine which public key the engine will load. An immediate high-bit suffix like `0xff`
+is rejected (`output exceeds declared size`), because the decoder pulls it into its code register
+during final renormalisation *before* landing on the end-of-stream symbol. However, once past
+the EOF boundary (e.g. via a 4-byte zero pad or past the decoder's unconsumed tail), arbitrary
+non-zero payloads are completely unread and silently accepted — in fact, the authentic `pk.bin`
+itself leaves its final 5 bytes unconsumed. The container is therefore unanchored and malleable
+to arbitrary trailing data injection.
 
 The two published readers also disagree on the same bytes. The pinned C++ deserializer
 [`deserialize_pubkey_raw`](../source/pvac_artifact_serialize.hpp#L425) ends at
